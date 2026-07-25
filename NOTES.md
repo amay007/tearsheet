@@ -1,5 +1,12 @@
 # TearSheet — Build Notes (last updated 2026-07-26)
 
+## Status: shipped
+
+Live at https://tearsheet-iota.vercel.app. Deployed on Vercel Hobby plan;
+live teardown run completed successfully with no function timeout — the
+Hobby-plan timeout risk flagged during planning is confirmed a non-issue on
+real runs, so no streaming rewrite is needed for now.
+
 ## What was built
 
 Single-page Next.js 16 (App Router, TypeScript, Tailwind v4) app.
@@ -53,26 +60,29 @@ Verified clean: `npx tsc --noEmit` and `npx eslint .`.
   git repo exists yet so no history to check; no hardcoded keys in source.
 - Hygiene: scratch script removed, `.claude/settings.local.json` gitignored,
   README rewritten (was untouched create-next-app boilerplate).
-- MIT license: pending, not yet added.
+- MIT license: added (`LICENSE`, Amay Bhargava).
 
-## Next: deploy sequence
+## Deploy sequence (complete)
 
-1. `git init`, then re-verify secrets are excluded (`git status`, `git
-   check-ignore`) before the first commit.
-2. Push to GitHub.
-3. Convert `gcp-credentials.json` into an env var; switch
+1. `git init`, verified secrets excluded (`git status`, `git check-ignore`),
+   committed. `AGENTS.md`/`CLAUDE.md` kept out of the repo (gitignored) as
+   local tooling files, not part of the public app.
+2. Pushed to GitHub: `amay007/tearsheet` (public), via HTTPS + fine-grained
+   PAT.
+3. Converted `gcp-credentials.json` into `GOOGLE_CREDENTIALS_JSON`; switched
    `googleAuthOptions.keyFile` → `googleAuthOptions.credentials` in
-   `src/app/api/teardown/route.ts`.
-4. Import into Vercel with three env vars (`GOOGLE_CLOUD_PROJECT`,
-   `GOOGLE_CLOUD_LOCATION`, the new credentials var).
-5. Measure real teardown latency against the Hobby plan's function timeout —
-   flagged as a risk earlier, not yet tested live.
+   `src/app/api/teardown/route.ts`, with file-based fallback for local dev.
+   Verified both paths locally.
+4. Imported into Vercel with three env vars (`GOOGLE_CLOUD_PROJECT`,
+   `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CREDENTIALS_JSON`).
+5. Deployed on Hobby plan as-is; live teardown run confirmed no timeout.
 
 ## Known post-launch items
 
 - In-memory rate limit is per-instance — move to Redis/Upstash if traffic
   scales across multiple serverless instances.
-- If Hobby-plan timeouts bite, streaming the response is the free fix.
+- Hobby-plan timeout confirmed a non-issue on real runs (2026-07-26); revisit
+  only if future runs actually time out.
 - Prompt still occasionally prepends a stray title line before Section 1.
 - No source-quality rule yet for well-covered public companies — the
   aggregator low-confidence rule was written with smaller/private companies
