@@ -69,13 +69,24 @@ export async function POST(req: NextRequest) {
   }
   const normalizedUrl = normalized.url;
 
+  const credentialsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+  let googleAuthOptions;
+  if (credentialsJson) {
+    try {
+      googleAuthOptions = { credentials: JSON.parse(credentialsJson) };
+    } catch {
+      console.error("GOOGLE_CREDENTIALS_JSON is not valid JSON.");
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 });
+    }
+  } else {
+    googleAuthOptions = { keyFile: path.join(process.cwd(), "gcp-credentials.json") };
+  }
+
   const ai = new GoogleGenAI({
     enterprise: true,
     project,
     location,
-    googleAuthOptions: {
-      keyFile: path.join(process.cwd(), "gcp-credentials.json"),
-    },
+    googleAuthOptions,
   });
 
   try {

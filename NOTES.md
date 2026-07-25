@@ -27,9 +27,11 @@ Verified clean: `npx tsc --noEmit` and `npx eslint .`.
 ## Vertex AI / Gemini Enterprise Agent Platform migration
 
 - Project: `tearsheet-503518`. Region: `us-central1`.
-- Auth: service account key file `gcp-credentials.json` at repo root,
-  gitignored. SDK config: `enterprise: true`, `googleAuthOptions: { keyFile }`
-  (`vertexai: true` still works but is deprecated post-rebrand in SDK 2.13.0).
+- Auth: `googleAuthOptions.credentials` parsed from `GOOGLE_CREDENTIALS_JSON`
+  env var when present (serverless/Vercel), falling back to the local
+  `gcp-credentials.json` key file (gitignored) for local dev. SDK config:
+  `enterprise: true` (`vertexai: true` still works but is deprecated
+  post-rebrand in SDK 2.13.0). Both paths verified locally 2026-07-26.
 - Model: `gemini-2.5-flash` (works immediately). `gemini-flash-latest` doesn't
   exist on this platform (Developer-API-only alias). `gemini-3.6-flash` is
   cataloged but access-gated for fresh trial projects — request via Model
