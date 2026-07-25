@@ -9,6 +9,18 @@ export const maxDuration = 120;
 const GENERIC_ERROR = "Something went wrong generating this teardown. Please try again in a minute.";
 const MAX_BODY_BYTES = 10_000;
 
+function categorizeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const status = typeof err === "object" && err !== null ? (err as { status?: unknown; code?: unknown }).status ?? (err as { code?: unknown }).code : undefined;
+
+  if (status === 429 || /RESOURCE_EXHAUSTED/i.test(message)) return "rate_limited";
+  if (status === 401 || status === 403 || /UNAUTHENTICATED|PERMISSION_DENIED/i.test(message)) return "auth_error";
+  if (typeof status === "number" && status >= 500) return "upstream_error";
+  if (/timeout|deadline/i.test(message)) return "timeout";
+  if (/ECONNRESET|ENOTFOUND|EAI_AGAIN|network/i.test(message)) return "network_error";
+  return "unknown_error";
+}
+
 const SYSTEM_PROMPT = `You are a sharp, skeptical company analyst producing a "teardown" for a founder or investor who has ten minutes and no patience for fluff.
 
 You will be given a company website URL. Use Google Search to read the site itself and to find independent information about the company: funding rounds, press coverage, reviews, job postings, competitor commentary, pricing changes, executive departures, etc.
@@ -89,6 +101,9 @@ export async function POST(req: NextRequest) {
     googleAuthOptions,
   });
 
+  const domain = new URL(normalizedUrl as string).hostname;
+  const startTime = Date.now();
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -113,7 +128,9 @@ export async function POST(req: NextRequest) {
       .map((part) => part.text)
       .join("");
     if (!text) {
+      const duration = Math.round((Date.now() - startTime) / 1000);
       console.error("Gemini generateContent returned an empty response.");
+      console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s category=empty_response`);
       return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
     }
 
@@ -125,9 +142,14 @@ export async function POST(req: NextRequest) {
 
     const uniqueSources = Array.from(new Map(sources.map((s) => [s.uri, s])).values());
 
+    const duration = Math.round((Date.now() - startTime) / 1000);
+    console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s`);
+
     return NextResponse.json({ text, sources: uniqueSources });
   } catch (err) {
+    const duration = Math.round((Date.now() - startTime) / 1000);
     console.error("Gemini generateContent failed:", err);
+    console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s category=${categorizeError(err)}`);
     return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
   }
 }
