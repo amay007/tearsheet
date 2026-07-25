@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.teardown h2 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+
+.teardown h2:first-child {
+  margin-top: 0;
+}
+
+.teardown p {
+  font-size: 0.9rem;
+  line-height: 1.65;
+  color: color-mix(in srgb, var(--foreground) 88%, transparent);
+}
+
+.teardown ul,
+.teardown ol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--foreground) 88%, transparent);
+}
+
+.teardown ul {
+  list-style-type: disc;
+}
+
+.teardown ol {
+  list-style-type: decimal;
+}
+
+.teardown strong {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.teardown a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
