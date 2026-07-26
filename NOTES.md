@@ -1,123 +1,109 @@
-# TearSheet — Build Notes (last updated 2026-07-26)
+# TearSheet — Technical Notes (last updated 2026-07-26)
 
-## Status: build phase complete — distribution only from here
+Single-page Next.js 16 (App Router, TypeScript, Tailwind v4) app that turns a
+company name or URL into an evidence-cited "teardown" via Gemini + Google
+Search grounding. Live at https://tearsheet-iota.vercel.app.
 
-Analytics shipped and verified in production: Vercel Analytics enabled on the
-root layout, `TEARDOWN_OK`/`TEARDOWN_FAIL` structured logging live and
-grep-able in Vercel function logs. Tool validated across 10 teardowns,
-including a company-name-collision case (cubehq.ai vs cube.dev) that it
-disambiguated correctly.
+## Architecture
 
-Remaining work is distribution, not building: resume bullet, LinkedIn
-Featured, launch post, cold DMs.
+- `src/app/page.tsx` — UI and client state machine: `idle → resolving →
+  choices → loading`. Classifies input, calls `/api/resolve` for name
+  inputs then `/api/teardown`; renders the confirmation strip, option
+  cards, and the final markdown (Verdict line split out for distinct
+  styling). Double-submit guarded via a ref, not just `disabled` state.
+- `src/app/api/teardown/route.ts` — model `gemini-2.5-flash` via
+  `@google/genai` v2.13.0 on Vertex AI / Gemini Enterprise Agent Platform,
+  `tools: [{ googleSearch: {} }]`. System prompt enforces: a
+  `Verdict: [one sentence]` opening line (no title heading, no hedging),
+  5 fixed sections, inline citations, banned filler, explicit flagging of
+  conflicting numbers (Growjo/Prospeo/Owler-style aggregators treated as
+  low-confidence), business-model-not-product analysis in Section 1,
+  specific-not-generic fragilities in Section 4, exactly 3 sharp questions
+  in Section 5, anomaly interrogation instead of side-by-side listing.
+  Citations from `groundingMetadata.groundingChunks[].web.{uri,title}`.
+- `src/app/api/resolve/route.ts` — cheap grounded lookup for name inputs.
+  Same model, `maxOutputTokens: 2048`, `thinkingConfig.thinkingBudget: 256`.
+  Returns a strict JSON array of `{name, oneLineDescriptor, domain,
+  confidence}` — one entry when a company is clearly dominant, 2–3 when
+  genuinely ambiguous, `[]` when nothing matches. Parser tolerates prose or
+  code-fences around the array instead of requiring an exact match, and
+  drops entries with a malformed or non-domain-shaped `domain`. Parse
+  failures and true no-matches both show the same friendly "couldn't find"
+  message to the user, while staying distinguishable server-side
+  (`RESOLVE_OK`/`RESOLVE_AMBIGUOUS`/`RESOLVE_FAIL`).
+- `src/lib/companyUrl.ts` — `classifyCompanyInput()`: URL only if the input
+  is domain-shaped (dot, no spaces, plausible TLD, parses as a hostname);
+  otherwise a name. Also `normalizeCompanyUrl()`, `validateInput()`. Return
+  types use literal-discriminant unions (`kind: "url"|"name"|"error"`,
+  `ok: true|false`) rather than `field?: undefined` unions — the latter
+  doesn't reliably narrow under `strict` TypeScript through destructuring.
+- `src/lib/gemini.ts` — shared `createGenAIClient()` and
+  `categorizeGeminiError()`/`extractResponseText()`, used by both routes.
+- `src/lib/rateLimit.ts` — in-memory per-IP limiters keyed off
+  `x-forwarded-for`. Teardown: 5/hour. Resolve: 20/hour on a separate
+  limiter, so browsing disambiguation options never eats the teardown
+  budget.
+- Response assembly filters `part.thought` in both routes, so no leaked
+  model reasoning reaches the screen.
 
-Parked ideas (not started): Interview mode, rating widget, confidence footer,
-run-diffing.
+## Shipped and verified
 
-## Feature: Verdict line (shipped 2026-07-26)
+- **Core teardown flow** — validated across 10+ live runs, including a
+  company-name-collision case correctly disambiguated. `npx tsc --noEmit`
+  / `npx eslint .` clean.
+- **Verdict line** (2026-07-26) — verified live: no title heading leaked,
+  no banned hedge words, rendered distinctly (`.verdict-line`, 1.35rem/700)
+  instead of passing through ReactMarkdown.
+- **Company name or URL input, with disambiguation** (2026-07-26) —
+  verified locally and in-browser: `zetwerk` (single clean match), `cube`
+  (ambiguous, 3 real candidates), `zetwrek` (typo resolved), `gocomet.com`
+  (URL bypasses resolution, unchanged), gibberish input (graceful
+  no-match). Fixed during build: `thinkingConfig.thinkingBudget` was
+  interacting with the `googleSearch` tool, causing repeated/looping
+  output truncated mid-JSON — fixed by tuning the budget/token cap and
+  making the JSON parser tolerant of prose/fences around the array.
+- **Analytics** — Vercel Analytics on the root layout; `TEARDOWN_OK`/
+  `TEARDOWN_FAIL` structured logging grep-able in Vercel function logs.
+- **Deployed** on Vercel Hobby plan; live runs confirmed no function
+  timeout.
 
-System prompt now requires a `Verdict: [one sentence]` line before Section 1,
-replacing any title heading, with hedging words (may/could/potentially)
-banned. Frontend (`src/app/page.tsx`) splits this line out of the markdown
-body via `splitVerdict()` and renders it with distinct styling (`.verdict-line`
-in `globals.css`, 1.35rem/700 weight) instead of passing it through
-ReactMarkdown. Verified against a live stripe.com teardown — no title
-heading leaked, no banned hedge words used.
+## Deferred
 
-## Status: shipped
+Not implemented: use-case modes, interview mode, rating widget, confidence
+footer, run-diffing.
 
-Live at https://tearsheet-iota.vercel.app. Deployed on Vercel Hobby plan;
-live teardown run completed successfully with no function timeout — the
-Hobby-plan timeout risk flagged during planning is confirmed a non-issue on
-real runs, so no streaming rewrite is needed for now.
+## Known issues / soft edges
 
-## What was built
-
-Single-page Next.js 16 (App Router, TypeScript, Tailwind v4) app.
-
-- `src/app/page.tsx` — URL input, Generate button (double-submit guarded via a
-  ref, not just `disabled` state), animated loading state, rendered markdown
-  result with a Sources list.
-- `src/app/api/teardown/route.ts` — calls Gemini via `@google/genai` (v2.13.0)
-  on Vertex AI / Gemini Enterprise Agent Platform, Google Search grounding on.
-- `src/lib/companyUrl.ts` — shared input normalization/validation (client + server).
-- `src/lib/rateLimit.ts` — in-memory per-IP rate limiter.
-- System prompt enforces 5 sections, inline citations, banned filler, flags
-  conflicting numbers (low-confidence tag for Growjo/Prospeo/Owler-style
-  aggregators), forces business-model analysis in Section 1, bans generic
-  fragilities, requires single sharp questions in Section 5, and forces
-  anomaly interrogation rather than side-by-side fact-listing.
-- Response text is assembled by explicitly filtering `part.thought` parts, so
-  no leaked model reasoning can reach the screen.
-
-Grounding config: `config: { tools: [{ googleSearch: {} }] }`; citations come
-from `response.candidates[0].groundingMetadata.groundingChunks[].web.{uri,title}`.
-
-Verified clean: `npx tsc --noEmit` and `npx eslint .`.
-
-## Vertex AI / Gemini Enterprise Agent Platform migration
-
-- Project: `tearsheet-503518`. Region: `us-central1`.
-- Auth: `googleAuthOptions.credentials` parsed from `GOOGLE_CREDENTIALS_JSON`
-  env var when present (serverless/Vercel), falling back to the local
-  `gcp-credentials.json` key file (gitignored) for local dev. SDK config:
-  `enterprise: true` (`vertexai: true` still works but is deprecated
-  post-rebrand in SDK 2.13.0). Both paths verified locally 2026-07-26.
-- Model: `gemini-2.5-flash` (works immediately). `gemini-flash-latest` doesn't
-  exist on this platform (Developer-API-only alias). `gemini-3.6-flash` is
-  cataloged but access-gated for fresh trial projects — request via Model
-  Garden later if wanted.
-- Free trial credits: $300, ~90 days, expires ~late October 2026 — reassess
-  at day 75.
-
-## Launch readiness (2026-07-26) — complete and verified
-
-- Input validation: trims, accepts bare domains and full URLs, rejects
-  empty/non-domain/>200-char input with friendly inline errors.
-- Rate limiting: 5 requests/IP/hour, in-memory, keyed off `x-forwarded-for`;
-  429 + `Retry-After` with a plain "you've hit the limit" message.
-- Error sanitization: every visitor-facing error is a specific friendly
-  validation message or one fixed generic string — no raw JSON, upstream
-  error text, or stack traces ever reach the client. Oversized bodies
-  (>10KB) rejected before parsing.
-- Secrets audit: `.env.local` and `gcp-credentials.json` both gitignored; no
-  git repo exists yet so no history to check; no hardcoded keys in source.
-- Hygiene: scratch script removed, `.claude/settings.local.json` gitignored,
-  README rewritten (was untouched create-next-app boilerplate).
-- MIT license: added (`LICENSE`, Amay Bhargava).
-
-## Deploy sequence (complete)
-
-1. `git init`, verified secrets excluded (`git status`, `git check-ignore`),
-   committed. `AGENTS.md`/`CLAUDE.md` kept out of the repo (gitignored) as
-   local tooling files, not part of the public app.
-2. Pushed to GitHub: `amay007/tearsheet` (public), via HTTPS + fine-grained
-   PAT.
-3. Converted `gcp-credentials.json` into `GOOGLE_CREDENTIALS_JSON`; switched
-   `googleAuthOptions.keyFile` → `googleAuthOptions.credentials` in
-   `src/app/api/teardown/route.ts`, with file-based fallback for local dev.
-   Verified both paths locally.
-4. Imported into Vercel with three env vars (`GOOGLE_CLOUD_PROJECT`,
-   `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CREDENTIALS_JSON`).
-5. Deployed on Hobby plan as-is; live teardown run confirmed no timeout.
-
-## Known post-launch items
-
-- In-memory rate limit is per-instance — move to Redis/Upstash if traffic
-  scales across multiple serverless instances.
-- Hobby-plan timeout confirmed a non-issue on real runs (2026-07-26); revisit
-  only if future runs actually time out.
+- `/api/resolve` occasionally returns empty model output (finishReason
+  `STOP`, zero candidate tokens) on hard/garbled name inputs — reproduced
+  consistently for one gibberish string during testing. Root cause not
+  isolated (thinking-budget/search-tool interaction is the leading
+  suspect). Masked by treating parse/empty-output failures the same as a
+  clean no-match, which is correct user-facing behavior either way — but
+  some resolvable names may silently show as not-found. Revisit if
+  `RESOLVE_FAIL ... category=parse_error` shows up at real frequency in
+  production logs.
+- In-memory rate limiting is per-instance — move to Redis/Upstash if
+  traffic scales across multiple serverless instances.
 - No source-quality rule yet for well-covered public companies — the
-  aggregator low-confidence rule was written with smaller/private companies
-  in mind.
-- `/api/resolve` occasionally returns empty text (finishReason `STOP`, zero
-  candidate tokens) on hard/garbled name inputs — reproduced consistently for
-  one specific gibberish string during testing (2026-07-26). Root cause not
-  isolated (thinking budget vs. search-tool interaction is the leading
-  suspect, per the earlier `thinkingBudget` truncation bug fixed the same
-  day). Currently masked by treating parse/empty-output failures the same as
-  a clean no-match ("Couldn't find a company matching that..."), which is the
-  right user-facing behavior regardless, but the underlying flakiness means
-  some resolvable names may silently show as not-found. Revisit if it shows
-  up in production logs as `RESOLVE_FAIL ... category=parse_error` at any
-  real frequency.
+  aggregator low-confidence rule was written with smaller/private
+  companies in mind.
+- No automated browser test coverage in this environment — UI changes are
+  verified via `tsc`/`eslint`, curl against the API routes, and manual
+  in-browser checks.
+
+## Running and deploying
+
+- Local dev: `npm run dev`. Requires either `GOOGLE_CREDENTIALS_JSON`
+  (JSON service-account key as a string, used in production) or a local
+  `gcp-credentials.json` key file (gitignored) at the project root, plus
+  `GOOGLE_CLOUD_PROJECT` and optionally `GOOGLE_CLOUD_LOCATION` (defaults
+  to `us-central1`) in `.env.local`.
+- Checks: `npx tsc --noEmit`, `npx eslint .`. Build/run: `npm run build`,
+  `npm run start`.
+- Deployed on Vercel (Hobby plan) with env vars `GOOGLE_CLOUD_PROJECT`,
+  `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CREDENTIALS_JSON`.
+- GCP project `tearsheet-503518`, region `us-central1`, model
+  `gemini-2.5-flash` (`gemini-flash-latest` doesn't exist on this
+  platform; `gemini-3.6-flash` is cataloged but access-gated for fresh
+  trial projects). $300 trial credit expires ~late Oct 2026.
