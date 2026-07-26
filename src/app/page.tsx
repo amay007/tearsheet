@@ -2,9 +2,12 @@
 
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
-import { MAX_COMPANY_URL_LENGTH, normalizeCompanyUrl } from "@/lib/companyUrl";
+import { MAX_INPUT_LENGTH, classifyCompanyInput } from "@/lib/companyUrl";
 
 type Source = { uri: string; title: string };
+type Match = { name: string; oneLineDescriptor: string; domain: string; confidence: "high" | "medium" | "low" };
+type Confirmation = { name: string; descriptor?: string };
+type Phase = "idle" | "resolving" | "choices" | "loading";
 
 const LOADING_MESSAGES = [
   "Reading the site...",
@@ -24,14 +27,19 @@ function splitVerdict(text: string): { verdict: string | null; body: string } {
 
 export default function Home() {
   const [url, setUrl] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
+  const [choices, setChoices] = useState<Match[]>([]);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const submittingRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const loading = phase === "loading";
 
   useEffect(() => {
     if (!loading) return;
@@ -44,29 +52,39 @@ export default function Home() {
     };
   }, [loading]);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (submittingRef.current || loading) return;
+  function resetToIdle() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    submittingRef.current = false;
+    setPhase("idle");
+    setError(null);
+    setResult(null);
+    setSources([]);
+    setChoices([]);
+    setConfirmation(null);
+    setElapsed(0);
+    setLoadingMessageIndex(0);
+  }
 
-    const normalized = normalizeCompanyUrl(url);
-    if (normalized.error) {
-      setError(normalized.error);
-      return;
-    }
-
-    submittingRef.current = true;
-    setLoading(true);
+  async function runTeardown(domain: string, confirmationInfo: Confirmation) {
+    setChoices([]);
+    setConfirmation(confirmationInfo);
+    setPhase("loading");
     setError(null);
     setResult(null);
     setSources([]);
     setElapsed(0);
     setLoadingMessageIndex(0);
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const res = await fetch("/api/teardown", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: normalized.url }),
+        body: JSON.stringify({ url: domain }),
+        signal: controller.signal,
       });
 
       let data: { text?: string; sources?: Source[]; error?: string } | null = null;
@@ -82,12 +100,84 @@ export default function Home() {
 
       setResult(data.text);
       setSources(data.sources ?? []);
+      setPhase("idle");
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error && err.message ? err.message : GENERIC_ERROR);
+      setPhase("idle");
     } finally {
-      setLoading(false);
       submittingRef.current = false;
     }
+  }
+
+  async function resolveCompanyName(name: string) {
+    setPhase("resolving");
+    setError(null);
+    setResult(null);
+    setSources([]);
+    setChoices([]);
+    setConfirmation(null);
+
+    try {
+      const res = await fetch("/api/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+
+      let data: { matches?: Match[]; error?: string } | null = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+
+      if (!data?.matches || data.matches.length === 0) {
+        throw new Error(data?.error || GENERIC_ERROR);
+      }
+
+      if (data.matches.length === 1) {
+        const match = data.matches[0];
+        await runTeardown(match.domain, { name: match.name, descriptor: match.oneLineDescriptor });
+        return;
+      }
+
+      setChoices(data.matches);
+      setPhase("choices");
+      submittingRef.current = false;
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : GENERIC_ERROR);
+      setPhase("idle");
+      submittingRef.current = false;
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (submittingRef.current || phase !== "idle") return;
+
+    const classified = classifyCompanyInput(url);
+    if (classified.kind === "error") {
+      setError(classified.error);
+      return;
+    }
+
+    submittingRef.current = true;
+    setError(null);
+
+    if (classified.kind === "url") {
+      const domain = new URL(classified.url).hostname;
+      await runTeardown(classified.url, { name: domain });
+      return;
+    }
+
+    await resolveCompanyName(classified.name);
+  }
+
+  function handleChoiceClick(match: Match) {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    runTeardown(match.domain, { name: match.name, descriptor: match.oneLineDescriptor });
   }
 
   return (
@@ -96,7 +186,7 @@ export default function Home() {
         <header className="flex flex-col gap-2 text-center">
           <h1 className="text-3xl font-semibold tracking-tight">TearSheet</h1>
           <p className="text-sm text-black/60 dark:text-white/60">
-            Paste a company&apos;s URL. Get a blunt, evidence-cited teardown.
+            Enter a company name or URL. Get a blunt, evidence-cited teardown.
           </p>
         </header>
 
@@ -105,22 +195,75 @@ export default function Home() {
             type="text"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="e.g. stripe.com"
-            disabled={loading}
-            maxLength={MAX_COMPANY_URL_LENGTH}
+            placeholder="e.g. stripe.com or Stripe"
+            disabled={phase !== "idle"}
+            maxLength={MAX_INPUT_LENGTH}
             className="flex-1 rounded-lg border border-black/10 dark:border-white/15 bg-transparent px-4 py-3 text-sm outline-none focus:border-black/30 dark:focus:border-white/40 transition-colors disabled:opacity-50"
           />
           <button
             type="submit"
-            disabled={loading || !url.trim()}
+            disabled={phase !== "idle" || !url.trim()}
             className="rounded-lg bg-black text-white dark:bg-white dark:text-black px-5 py-3 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-85 transition-opacity whitespace-nowrap"
           >
-            {loading ? "Generating..." : "Generate Teardown"}
+            {phase === "loading" ? "Generating..." : phase === "resolving" ? "Looking up..." : "Generate Teardown"}
           </button>
         </form>
 
-        {loading && (
+        {phase === "resolving" && (
           <div className="flex flex-col items-center gap-3 py-10 text-center">
+            <div className="h-5 w-5 rounded-full border-2 border-black/15 dark:border-white/20 border-t-black dark:border-t-white animate-spin" />
+            <p className="text-sm text-black/60 dark:text-white/60">
+              Looking up &ldquo;{url.trim()}&rdquo;...
+            </p>
+          </div>
+        )}
+
+        {phase === "choices" && choices.length > 0 && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-black/60 dark:text-white/60 text-center">
+              A few companies match — which one?
+            </p>
+            <div className="flex flex-col gap-2">
+              {choices.map((c) => (
+                <button
+                  key={c.domain}
+                  type="button"
+                  onClick={() => handleChoiceClick(c)}
+                  className="flex flex-col items-start gap-0.5 rounded-lg border border-black/10 dark:border-white/15 px-4 py-3 text-left hover:border-black/30 dark:hover:border-white/40 transition-colors"
+                >
+                  <span className="text-sm font-medium">{c.name}</span>
+                  <span className="text-xs text-black/60 dark:text-white/60">{c.oneLineDescriptor}</span>
+                  <span className="text-xs text-black/40 dark:text-white/40">{c.domain}</span>
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={resetToIdle}
+              className="self-center text-xs underline underline-offset-2 text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white"
+            >
+              none of these — try again
+            </button>
+          </div>
+        )}
+
+        {phase === "loading" && (
+          <div className="flex flex-col items-center gap-4 py-10 text-center">
+            {confirmation && (
+              <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-black/60 dark:text-white/60">
+                <span>
+                  Analyzing <span className="font-medium text-black dark:text-white">{confirmation.name}</span>
+                  {confirmation.descriptor ? ` — ${confirmation.descriptor}` : ""}
+                </span>
+                <button
+                  type="button"
+                  onClick={resetToIdle}
+                  className="text-xs underline underline-offset-2 text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white whitespace-nowrap"
+                >
+                  not this?
+                </button>
+              </div>
+            )}
             <div className="h-5 w-5 rounded-full border-2 border-black/15 dark:border-white/20 border-t-black dark:border-t-white animate-spin" />
             <p className="text-sm text-black/60 dark:text-white/60">
               {LOADING_MESSAGES[loadingMessageIndex]}

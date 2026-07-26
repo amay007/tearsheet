@@ -110,3 +110,14 @@ Verified clean: `npx tsc --noEmit` and `npx eslint .`.
 - No source-quality rule yet for well-covered public companies — the
   aggregator low-confidence rule was written with smaller/private companies
   in mind.
+- `/api/resolve` occasionally returns empty text (finishReason `STOP`, zero
+  candidate tokens) on hard/garbled name inputs — reproduced consistently for
+  one specific gibberish string during testing (2026-07-26). Root cause not
+  isolated (thinking budget vs. search-tool interaction is the leading
+  suspect, per the earlier `thinkingBudget` truncation bug fixed the same
+  day). Currently masked by treating parse/empty-output failures the same as
+  a clean no-match ("Couldn't find a company matching that..."), which is the
+  right user-facing behavior regardless, but the underlying flakiness means
+  some resolvable names may silently show as not-found. Revisit if it shows
+  up in production logs as `RESOLVE_FAIL ... category=parse_error` at any
+  real frequency.
