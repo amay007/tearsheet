@@ -16,6 +16,12 @@ const LOADING_MESSAGES = [
 
 const GENERIC_ERROR = "Something went wrong generating this teardown. Please try again in a minute.";
 
+function splitVerdict(text: string): { verdict: string | null; body: string } {
+  const match = text.match(/^Verdict:\s*(.+?)\s*\n+([\s\S]*)$/);
+  if (!match) return { verdict: null, body: text };
+  return { verdict: match[1].trim(), body: match[2] };
+}
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -133,9 +139,12 @@ export default function Home() {
           </div>
         )}
 
-        {result && (
+        {result && (() => {
+          const { verdict, body } = splitVerdict(result);
+          return (
           <article className="teardown flex flex-col gap-6 rounded-xl border border-black/10 dark:border-white/15 px-6 py-8 sm:px-10 sm:py-10">
-            <ReactMarkdown>{result}</ReactMarkdown>
+            {verdict && <p className="verdict-line">{verdict}</p>}
+            <ReactMarkdown>{body}</ReactMarkdown>
 
             {sources.length > 0 && (
               <div className="mt-4 border-t border-black/10 dark:border-white/15 pt-6">
@@ -159,7 +168,8 @@ export default function Home() {
               </div>
             )}
           </article>
-        )}
+          );
+        })()}
 
         <footer className="text-center">
           <a

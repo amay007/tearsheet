@@ -1,5 +1,29 @@
 # TearSheet — Build Notes (last updated 2026-07-26)
 
+## Status: build phase complete — distribution only from here
+
+Analytics shipped and verified in production: Vercel Analytics enabled on the
+root layout, `TEARDOWN_OK`/`TEARDOWN_FAIL` structured logging live and
+grep-able in Vercel function logs. Tool validated across 10 teardowns,
+including a company-name-collision case (cubehq.ai vs cube.dev) that it
+disambiguated correctly.
+
+Remaining work is distribution, not building: resume bullet, LinkedIn
+Featured, launch post, cold DMs.
+
+Parked ideas (not started): Interview mode, rating widget, confidence footer,
+run-diffing.
+
+## Feature: Verdict line (shipped 2026-07-26)
+
+System prompt now requires a `Verdict: [one sentence]` line before Section 1,
+replacing any title heading, with hedging words (may/could/potentially)
+banned. Frontend (`src/app/page.tsx`) splits this line out of the markdown
+body via `splitVerdict()` and renders it with distinct styling (`.verdict-line`
+in `globals.css`, 1.35rem/700 weight) instead of passing it through
+ReactMarkdown. Verified against a live stripe.com teardown — no title
+heading leaked, no banned hedge words used.
+
 ## Status: shipped
 
 Live at https://tearsheet-iota.vercel.app. Deployed on Vercel Hobby plan;
@@ -83,7 +107,6 @@ Verified clean: `npx tsc --noEmit` and `npx eslint .`.
   scales across multiple serverless instances.
 - Hobby-plan timeout confirmed a non-issue on real runs (2026-07-26); revisit
   only if future runs actually time out.
-- Prompt still occasionally prepends a stray title line before Section 1.
 - No source-quality rule yet for well-covered public companies — the
   aggregator low-confidence rule was written with smaller/private companies
   in mind.
