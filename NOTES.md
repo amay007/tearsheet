@@ -225,7 +225,21 @@ Not implemented: rating widget, confidence footer, run-diffing.
   during testing. The STATS-line fix above removed one *systematic*
   cause of 0-source responses; ordinary call-to-call variance in
   whether the model chooses to search remains and isn't something a
-  prompt can fully eliminate.
+  prompt can fully eliminate. Confirmed 2026-07-28 this reproduces on
+  the **live production URL**, not just localhost: 3 consecutive calls
+  to `https://tearsheet-iota.vercel.app/api/teardown` with the same
+  domain returned 0, then 12, then 16 real grounding sources. Checked
+  for a prod-specific cause (env vars, region, auth path) and found
+  none — `src/lib/gemini.ts` reads the same `GOOGLE_CLOUD_PROJECT`/
+  `GOOGLE_CLOUD_LOCATION` env vars in both environments, no
+  `NODE_ENV`/`VERCEL`-conditional branching anywhere in the app, and
+  auth clearly works in prod (all 3 calls returned valid, correctly-
+  identified text — a broken credential would fail the whole call, not
+  just zero out sources). This is model/search variance, not a
+  deployment bug. Mitigated (not eliminated) by a system-prompt rule:
+  sections with little independent sourcing must say so explicitly and
+  signal extra caution, instead of reading with the same confident tone
+  as a well-sourced section.
 - **Same company name colliding *within the same country* is only
   partially handled.** Domain-anchoring (above) reliably prevents
   cross-country/cross-industry mixups (confirmed fix: Swedish vs
