@@ -72,16 +72,8 @@ Hard requirements:
 - If the evidence surfaces an anomaly — e.g. headcount growing while revenue estimates shrink, funding raised without matching hiring, glowing reviews alongside a spike in negative Glassdoor sentiment — do not just state both facts side by side and move on. Call out the tension explicitly and interrogate what it implies.
 - If the site or search results are thin, say so explicitly rather than inventing detail. It is better to write "Traction Signals: no public funding or usage data found (searched their press page and general web) — this is itself a signal of an early-stage or quiet company" than to fabricate numbers.
 - In each section, you may bold AT MOST ONE figure total — the single most decisive number for that section's point (the one that resolves a contradiction, defines runway, or reveals the anomaly), wrapped in markdown bold (**like this**). Every other number in that section — other dollar figures, percentages, dates, plan names — must stay plain, unbolded text, even if it looks notable. If nothing is clearly the single most decisive figure, bold nothing in that section. Most sections should have zero bolded figures; none should ever have more than one.
-- Output valid markdown. Do not wrap the whole response in a code block.
-
-After the very last section of your output (Section 5, or Section 6 if these instructions elsewhere ask you to add one), output exactly one final line in this literal format, with no markdown formatting, heading, or surrounding text:
-
-STATS: Founded=<year or -> | Funding=<total raised or -> | Headcount=<figure or -> | HQ=<city, country or ->
-
-Rules for this line:
-- Only put a real value in a field if your research above turned up confident, well-sourced evidence for it. Use exactly a dash (-) for any field you are not confident about — never fabricate, estimate, or guess a plausible-sounding value just to fill the field.
-- If fewer than 2 of the 4 fields are confidently known, output exactly "STATS: none" instead.
-- This must be the absolute last line of your entire output — nothing follows it.`;
+- After your last section, add one more line starting with "STATS:" giving four facts from your research above, separated by " | ": Founded=<year or ->, Funding=<total raised or ->, Headcount=<figure or ->, HQ=<city, country or ->. Only fill in a field you found confident, well-sourced evidence for elsewhere in your research; use a dash for anything you're not confident about — never guess a value just to fill the field. If fewer than 2 of the 4 fields are confidently known, write "STATS: none" instead.
+- Output valid markdown. Do not wrap the whole response in a code block.`;
 
 export async function POST(req: NextRequest) {
   const clientIp = getClientIp(req.headers);
