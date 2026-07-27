@@ -54,7 +54,7 @@ function splitVerdict(text: string): { verdict: string | null; body: string } {
   return { verdict: match[1].trim(), body: match[2] };
 }
 
-type Stats = Partial<Record<"founded" | "funding" | "headcount" | "hq", string>>;
+type Stats = Partial<Record<"founded" | "funding" | "headcount" | "hq" | "revenue" | "growth", string>>;
 
 function extractStats(text: string): { stats: Stats; textWithoutStats: string } {
   const trimmed = text.trimEnd();
@@ -72,7 +72,7 @@ function extractStats(text: string): { stats: Stats; textWithoutStats: string } 
     const key = part.slice(0, eq).trim().toLowerCase();
     const val = part.slice(eq + 1).trim();
     if (!val || val === "-") continue;
-    if (key === "founded" || key === "funding" || key === "headcount" || key === "hq") {
+    if (key === "founded" || key === "funding" || key === "headcount" || key === "hq" || key === "revenue" || key === "growth") {
       stats[key] = val;
     }
   }
@@ -84,6 +84,8 @@ const STAT_FIELDS: { key: keyof Stats; label: string }[] = [
   { key: "funding", label: "Funding" },
   { key: "headcount", label: "Headcount" },
   { key: "hq", label: "HQ" },
+  { key: "revenue", label: "Revenue" },
+  { key: "growth", label: "Growth" },
 ];
 
 function StatStrip({ stats }: { stats: Stats }) {
