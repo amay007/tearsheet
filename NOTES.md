@@ -1,4 +1,4 @@
-# TearSheet — Technical Notes (last updated 2026-07-27)
+# TearSheet — Technical Notes (last updated 2026-07-28)
 
 Single-page Next.js 16 (App Router, TypeScript, Tailwind v4) app that turns a
 company name or URL into an evidence-cited "teardown" via Gemini + Google
@@ -29,10 +29,11 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
     the rest. Falls back to rendering the whole `body` unsplit if no
     `## ` headings are found (malformed model output).
   - `extractStats()` parses a trailing `STATS: Founded=... | Funding=...
-    | Headcount=... | HQ=...` (or `STATS: none`) line off the end of the
-    response and strips it from the displayed body. Stat strip only
-    renders when ≥2 fields are confidently known (dash-valued fields are
-    never fabricated or displayed).
+    | Headcount=... | HQ=... | Revenue=... | Growth=...` (or `STATS:
+    none`) line off the end of the response and strips it from the
+    displayed body. Stat strip only renders when ≥2 of the 6 fields are
+    confidently known (dash-valued fields are never fabricated or
+    displayed).
   - Copy-as-Markdown reconstructs Verdict + body + a `## Sources` list
     from the `sources` array and copies via Clipboard API. Copy Link
     builds a `?q=<companyName-or-url>&mode=<mode>` URL from the same
@@ -41,19 +42,28 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   `@google/genai` v2.13.0 on Vertex AI / Gemini Enterprise Agent Platform,
   `tools: [{ googleSearch: {} }]`. System prompt enforces: a
   `Verdict: [one sentence]` opening line (no title heading, no hedging),
-  5 fixed sections, inline citations, banned filler, explicit flagging of
-  conflicting numbers (Growjo/Prospeo/Owler-style aggregators treated as
-  low-confidence), business-model-not-product analysis in Section 1,
-  Fragilities required as a bulleted list (needed so the CSS accent has
-  list items to attach to), exactly 3 sharp questions in Section 5,
-  anomaly interrogation instead of side-by-side listing, at most one
-  bolded figure per section, and a trailing `STATS:` line. Citations
-  from `groundingMetadata.groundingChunks[].web.{uri,title}`.
+  5 fixed sections with plain, unnumbered headings (no "1.", "2." etc.
+  prefix — a title like "5 Sharp Questions..." keeps its own number,
+  only the artificial section-position prefix is banned), inline
+  citations, banned filler, explicit flagging of conflicting numbers
+  (Growjo/Prospeo/Owler-style aggregators treated as low-confidence),
+  business-model-not-product analysis in How They Make Money, that
+  section plus Competitive Position and Traction Signals required to
+  open with a short paragraph then 2-4 sub-bullets for discrete facts
+  (not one dense paragraph), Fragilities required as a bulleted list
+  (needed so the CSS accent has list items to attach to), exactly 3
+  sharp questions in the 3-Questions section, anomaly interrogation
+  instead of side-by-side listing, at most one bolded figure per
+  section, a note of low-confidence/extra-caution for thinly-sourced
+  sections, and a trailing 6-field `STATS:` line (Founded/Funding/
+  Headcount/HQ/Revenue/Growth). Citations from
+  `groundingMetadata.groundingChunks[].web.{uri,title}`.
   - **Use-case modes** — `mode` param (`general` default, `investing`,
     `interviewing`, `selling`, `competing`). Non-general modes append one
     `MODE_SECTION_PROMPTS[mode]` block to the base system prompt, adding
-    exactly one "## 6. ..." section (Diligence Notes / 5 Sharp Questions
-    to Ask Their Leadership / Sales Intelligence / Competitive Playbook)
+    exactly one unnumbered 6th section (Diligence Notes / 5 Sharp
+    Questions to Ask Their Leadership / Sales Intelligence / Competitive
+    Playbook)
     without altering Sections 1–5 or the Verdict line. Logged in
     `TEARDOWN_OK`/`FAIL`.
   - **Identity anchoring** — the route accepts optional `companyName`/
@@ -142,9 +152,9 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
 - **Visual pass** (2026-07-27) — bordered cards for Section 5 and any
   mode's 6th section, left-border accent on Fragilities, at most one
   bolded figure per section (model-side rule, tightened after an early
-  version let it bold several), compact Founded/Funding/Headcount/HQ
-  stat strip below the Verdict (skipped when <2 fields are confidently
-  known, dash-filled otherwise, never fabricated).
+  version let it bold several), compact stat strip below the Verdict
+  (6 fields as of 2026-07-28, see Architecture; skipped when <2 fields
+  are confidently known, dash-filled otherwise, never fabricated).
 - **Copy/share/favicon/OG** (2026-07-27) — Copy as Markdown, Copy Link
   (`?q=&mode=` prefill deep link), code-generated favicon and OG image,
   explicit `openGraph`/`twitter` metadata. Verified production build
@@ -159,6 +169,12 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   tile. Everything else (pill wrapping, card borders, numbering,
   accent, button sizing) confirmed clean with no further changes
   needed.
+- **Content/format refinements** (2026-07-28) — plain unnumbered section
+  headings; How They Make Money / Competitive Position / Traction
+  Signals restructured to a short paragraph + 2-4 sub-bullets of
+  discrete facts; stat strip expanded to 6 fields (added Revenue,
+  Growth%). All three verified live against real teardowns before
+  committing.
 - **Analytics** — Vercel Analytics on the root layout; `TEARDOWN_OK`/
   `TEARDOWN_FAIL` structured logging grep-able in Vercel function logs.
 - **Deployed** on Vercel Hobby plan; live runs confirmed no function
