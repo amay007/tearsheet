@@ -150,6 +150,15 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   explicit `openGraph`/`twitter` metadata. Verified production build
   succeeds, OG image/favicon both resolve as valid PNGs, deep-link
   prefill populates the input and mode pill correctly.
+- **Mobile check at ~390-400px** (2026-07-27) — mode pills, cards,
+  Fragilities accent, stat strip, copy/share buttons, and the full
+  teardown render checked in Chrome dev tools. One issue found and
+  fixed: the stat strip's flex-row tiles could refuse to wrap a long
+  value (e.g. a full "City, State, Country" HQ string), forcing
+  horizontal overflow — fixed with `min-w-0`/`break-words` on each
+  tile. Everything else (pill wrapping, card borders, numbering,
+  accent, button sizing) confirmed clean with no further changes
+  needed.
 - **Analytics** — Vercel Analytics on the root layout; `TEARDOWN_OK`/
   `TEARDOWN_FAIL` structured logging grep-able in Vercel function logs.
 - **Deployed** on Vercel Hobby plan; live runs confirmed no function
@@ -245,11 +254,8 @@ Not implemented: rating widget, confidence footer, run-diffing.
   changes are verified via `tsc`/`eslint`, curl against the API routes,
   static DOM-structure checks (`react-dom/server` render of the actual
   components against real API output), CSS specificity analysis where
-  applicable, and manual in-browser checks done separately.
-- Mobile check (~390px) for the mode pills, cards, and stat strip from
-  the visual pass is in progress — one issue found and fixed so far
-  (stat strip's flex-row tiles could refuse to wrap a long HQ value,
-  forcing horizontal overflow; fixed with `min-w-0`/`break-words`).
+  applicable, and manual in-browser checks done separately (mobile
+  check at ~390-400px was done this way, in Chrome dev tools).
 
 ## Running and deploying
 

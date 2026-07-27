@@ -90,11 +90,11 @@ function StatStrip({ stats }: { stats: Stats }) {
   return (
     <div className="flex flex-wrap gap-x-6 gap-y-2 rounded-lg border border-black/10 dark:border-white/15 px-4 py-3">
       {STAT_FIELDS.map((f) => (
-        <div key={f.key} className="flex flex-col gap-0.5">
+        <div key={f.key} className="flex flex-col gap-0.5 min-w-0">
           <span className="text-[0.65rem] font-medium uppercase tracking-wide text-black/40 dark:text-white/40">
             {f.label}
           </span>
-          <span className="text-sm font-semibold text-black dark:text-white">
+          <span className="text-sm font-semibold text-black dark:text-white break-words">
             {stats[f.key] ?? "—"}
           </span>
         </div>
