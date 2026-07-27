@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Fragment } from "react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import { MAX_INPUT_LENGTH, classifyCompanyInput } from "@/lib/companyUrl";
 
 type Source = { uri: string; title: string };
@@ -33,6 +34,99 @@ function splitVerdict(text: string): { verdict: string | null; body: string } {
   if (!match) return { verdict: null, body: text };
   return { verdict: match[1].trim(), body: match[2] };
 }
+
+type Stats = Partial<Record<"founded" | "funding" | "headcount" | "hq", string>>;
+
+function extractStats(text: string): { stats: Stats; textWithoutStats: string } {
+  const trimmed = text.trimEnd();
+  const match = trimmed.match(/\n(STATS:\s*.*)$/);
+  if (!match) return { stats: {}, textWithoutStats: text };
+
+  const textWithoutStats = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
+  const value = match[1].replace(/^STATS:\s*/, "").trim();
+  if (!value || /^none$/i.test(value)) return { stats: {}, textWithoutStats };
+
+  const stats: Stats = {};
+  for (const part of value.split("|")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim().toLowerCase();
+    const val = part.slice(eq + 1).trim();
+    if (!val || val === "-") continue;
+    if (key === "founded" || key === "funding" || key === "headcount" || key === "hq") {
+      stats[key] = val;
+    }
+  }
+  return { stats, textWithoutStats };
+}
+
+const STAT_FIELDS: { key: keyof Stats; label: string }[] = [
+  { key: "founded", label: "Founded" },
+  { key: "funding", label: "Funding" },
+  { key: "headcount", label: "Headcount" },
+  { key: "hq", label: "HQ" },
+];
+
+function StatStrip({ stats }: { stats: Stats }) {
+  return (
+    <div className="flex flex-wrap gap-x-6 gap-y-2 rounded-lg border border-black/10 dark:border-white/15 px-4 py-3">
+      {STAT_FIELDS.map((f) => (
+        <div key={f.key} className="flex flex-col gap-0.5">
+          <span className="text-[0.65rem] font-medium uppercase tracking-wide text-black/40 dark:text-white/40">
+            {f.label}
+          </span>
+          <span className="text-sm font-semibold text-black dark:text-white">
+            {stats[f.key] ?? "—"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type TeardownSection = { title: string; content: string };
+
+function parseSections(body: string): TeardownSection[] {
+  const sections: TeardownSection[] = [];
+  let currentTitle: string | null = null;
+  let currentLines: string[] = [];
+
+  for (const line of body.split("\n")) {
+    const headingMatch = line.match(/^##\s+(.*)$/);
+    if (headingMatch) {
+      if (currentTitle !== null) {
+        sections.push({ title: currentTitle, content: currentLines.join("\n").trim() });
+      }
+      currentTitle = headingMatch[1].trim();
+      currentLines = [];
+    } else if (currentTitle !== null) {
+      currentLines.push(line);
+    }
+  }
+  if (currentTitle !== null) {
+    sections.push({ title: currentTitle, content: currentLines.join("\n").trim() });
+  }
+  return sections;
+}
+
+const CARD_SECTION_MARKERS = [
+  "3 Questions Leadership Is Debating Right Now",
+  "Diligence Notes",
+  "5 Sharp Questions to Ask Their Leadership",
+  "Sales Intelligence",
+  "Competitive Playbook",
+];
+
+const isCardSection = (title: string) => CARD_SECTION_MARKERS.some((m) => title.includes(m));
+const isFragilitiesSection = (title: string) => title.includes("Fragilities");
+
+const CardListItem: Components["li"] = ({ children }) => <li className="card-list-item">{children}</li>;
+const CardOrderedList: Components["ol"] = ({ children }) => <ol className="card-list card-list-ordered">{children}</ol>;
+const CardUnorderedList: Components["ul"] = ({ children }) => <ul className="card-list">{children}</ul>;
+const cardComponents: Components = { ol: CardOrderedList, ul: CardUnorderedList, li: CardListItem };
+
+const FragilityListItem: Components["li"] = ({ children }) => <li className="fragility-item">{children}</li>;
+const fragilityComponents: Components = { li: FragilityListItem };
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -321,11 +415,31 @@ export default function Home() {
         )}
 
         {result && (() => {
-          const { verdict, body } = splitVerdict(result);
+          const { stats, textWithoutStats } = extractStats(result);
+          const { verdict, body } = splitVerdict(textWithoutStats);
+          const sections = parseSections(body);
+          const confidentStatCount = Object.keys(stats).length;
           return (
           <article className="teardown flex flex-col gap-6 rounded-xl border border-black/10 dark:border-white/15 px-6 py-8 sm:px-10 sm:py-10">
             {verdict && <p className="verdict-line">{verdict}</p>}
-            <ReactMarkdown>{body}</ReactMarkdown>
+            {confidentStatCount >= 2 && <StatStrip stats={stats} />}
+
+            {sections.length > 0 ? (
+              sections.map((section, i) => (
+                <Fragment key={i}>
+                  <h2>{section.title}</h2>
+                  {isCardSection(section.title) ? (
+                    <ReactMarkdown components={cardComponents}>{section.content}</ReactMarkdown>
+                  ) : isFragilitiesSection(section.title) ? (
+                    <ReactMarkdown components={fragilityComponents}>{section.content}</ReactMarkdown>
+                  ) : (
+                    <ReactMarkdown>{section.content}</ReactMarkdown>
+                  )}
+                </Fragment>
+              ))
+            ) : (
+              <ReactMarkdown>{body}</ReactMarkdown>
+            )}
 
             {sources.length > 0 && (
               <div className="mt-4 border-t border-black/10 dark:border-white/15 pt-6">

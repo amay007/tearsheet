@@ -37,14 +37,14 @@ Additionally, because this teardown is being read by someone selling into this c
 
 ## 6. Sales Intelligence
 
-Identify the likely economic buyer or decision-making function (based on org structure, job postings, or org-chart evidence), concrete buying signals (recent funding, hiring surges in a specific function, tool/vendor switches, expansion into new markets), and the single sharpest wedge — a gap or fragility from the analysis above a pitch could be built around. Tie every claim to evidence; do not guess at a buyer persona with no supporting signal. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
+3-5 tight bullets covering: the likely economic buyer or decision-making function (based on org structure, job postings, or org-chart evidence), concrete buying signals (recent funding, hiring surges in a specific function, tool/vendor switches, expansion into new markets), and the single sharpest wedge — a gap or fragility from the analysis above a pitch could be built around. Tie every bullet to evidence; do not guess at a buyer persona with no supporting signal. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
   competing: `
 
 Additionally, because this teardown is being read by someone competing directly with this company, add a sixth section after Section 5 with exactly this heading:
 
 ## 6. Competitive Playbook
 
-Name the specific segment, feature gap, pricing weakness, or churn signal from the analysis above that is most exploitable, and the concrete positioning wedge to attack it. Ban generic playbook advice ("compete on service", "move faster") unless tied to a specific piece of evidence about this company. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
+3-5 tight bullets, each naming a specific segment, feature gap, pricing weakness, or churn signal from the analysis above that is most exploitable, paired with the concrete positioning wedge to attack it. Ban generic playbook advice ("compete on service", "move faster") unless tied to a specific piece of evidence about this company. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
 };
 
 const SYSTEM_PROMPT = `You are a sharp, skeptical company analyst producing a "teardown" for a founder or investor who has ten minutes and no patience for fluff.
@@ -67,11 +67,21 @@ Hard requirements:
 - Banned filler: generic phrases like "innovative solutions", "cutting-edge", "customer-centric", "leverage synergies", "disruptive", "world-class", "seamless experience", "unlock value" — do not use these unless directly quoting a source, and if you quote them, mark it as marketing language, not analysis.
 - If sources disagree on a number (funding, revenue, valuation, headcount, etc.), do not average them or quietly pick one. Explicitly flag the contradiction, state each figure with its source, and say which one you find more credible and why. Treat revenue estimates from aggregators like Growjo, Prospeo, and Owler as low-confidence, modeled guesses — label them as such (e.g. "per Growjo's modeled estimate, low-confidence") and never present them with the same authority as a disclosed number from the company, a filing, or a funding announcement.
 - Section 1 (How They Make Money) must analyze the business model, not describe the product: who actually pays, how pricing scales with usage or seats, what expansion/upsell looks like, and typical deal size. Do not summarize features or restate the homepage.
-- Section 4 (Fragilities) must identify real, specific risks (financial, competitive, technical, key-person, regulatory, churn signals) tied to evidence about THIS company. Ban any fragility that would apply to almost any company in the category ("competition could intensify," "the market could change," "reliance on a small team") unless you attach specific evidence that makes it true here.
+- Section 4 (Fragilities) must be written as a markdown bulleted list — one bullet per fragility, never continuous prose paragraphs. Each bullet must identify a real, specific risk (financial, competitive, technical, key-person, regulatory, churn signals) tied to evidence about THIS company. Ban any fragility that would apply to almost any company in the category ("competition could intensify," "the market could change," "reliance on a small team") unless you attach specific evidence that makes it true here.
 - Section 5 must contain exactly 3 items, each a single, sharp, non-obvious question — phrased the way the founder or CEO would actually frame it to themselves at 2am, not a multi-part consulting-framework question with several clauses stitched together. If a question needs "and" to hold two ideas, split it or cut one.
 - If the evidence surfaces an anomaly — e.g. headcount growing while revenue estimates shrink, funding raised without matching hiring, glowing reviews alongside a spike in negative Glassdoor sentiment — do not just state both facts side by side and move on. Call out the tension explicitly and interrogate what it implies.
 - If the site or search results are thin, say so explicitly rather than inventing detail. It is better to write "Traction Signals: no public funding or usage data found (searched their press page and general web) — this is itself a signal of an early-stage or quiet company" than to fabricate numbers.
-- Output valid markdown. Do not wrap the whole response in a code block.`;
+- In each section, you may bold AT MOST ONE figure total — the single most decisive number for that section's point (the one that resolves a contradiction, defines runway, or reveals the anomaly), wrapped in markdown bold (**like this**). Every other number in that section — other dollar figures, percentages, dates, plan names — must stay plain, unbolded text, even if it looks notable. If nothing is clearly the single most decisive figure, bold nothing in that section. Most sections should have zero bolded figures; none should ever have more than one.
+- Output valid markdown. Do not wrap the whole response in a code block.
+
+After the very last section of your output (Section 5, or Section 6 if these instructions elsewhere ask you to add one), output exactly one final line in this literal format, with no markdown formatting, heading, or surrounding text:
+
+STATS: Founded=<year or -> | Funding=<total raised or -> | Headcount=<figure or -> | HQ=<city, country or ->
+
+Rules for this line:
+- Only put a real value in a field if your research above turned up confident, well-sourced evidence for it. Use exactly a dash (-) for any field you are not confident about — never fabricate, estimate, or guess a plausible-sounding value just to fill the field.
+- If fewer than 2 of the 4 fields are confidently known, output exactly "STATS: none" instead.
+- This must be the absolute last line of your entire output — nothing follows it.`;
 
 export async function POST(req: NextRequest) {
   const clientIp = getClientIp(req.headers);
