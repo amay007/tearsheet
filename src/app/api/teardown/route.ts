@@ -19,30 +19,30 @@ function parseMode(value: unknown): Mode {
 const MODE_SECTION_PROMPTS: Record<Exclude<Mode, "general">, string> = {
   investing: `
 
-Additionally, because this teardown is being read by someone deciding whether to invest, add a sixth section after Section 5 with exactly this heading:
+Additionally, because this teardown is being read by someone deciding whether to invest, add a sixth section after Section 5 with exactly this heading (no number prefix):
 
-## 6. Diligence Notes
+## Diligence Notes
 
 List the specific, unresolved items a diligence process should chase before wiring money — each tied to a concrete gap, contradiction, or unverifiable claim surfaced above (e.g. a number only one low-confidence source supports, a metric management hasn't disclosed, a claim that contradicts a public filing or review). Do not include generic checklist boilerplate ("review the cap table", "check references") unless you attach a specific reason it matters here. 4-6 tight bullets. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
   interviewing: `
 
-Additionally, because this teardown is being read by someone interviewing at this company, add a sixth section after Section 5 with exactly this heading:
+Additionally, because this teardown is being read by someone interviewing at this company, add a sixth section after Section 5 with exactly this heading (no number prefix):
 
-## 6. 5 Sharp Questions to Ask Their Leadership
+## 5 Sharp Questions to Ask Their Leadership
 
 Exactly 5 questions a sharp candidate would ask a hiring manager or exec to pressure-test the fragilities and anomalies found above — phrased the way a person would actually ask them out loud, not consulting-speak. Each question must be traceable to a specific fact or tension surfaced earlier in this analysis. One idea per question; split or cut anything joined by "and". This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
   selling: `
 
-Additionally, because this teardown is being read by someone selling into this company, add a sixth section after Section 5 with exactly this heading:
+Additionally, because this teardown is being read by someone selling into this company, add a sixth section after Section 5 with exactly this heading (no number prefix):
 
-## 6. Sales Intelligence
+## Sales Intelligence
 
 3-5 tight bullets covering: the likely economic buyer or decision-making function (based on org structure, job postings, or org-chart evidence), concrete buying signals (recent funding, hiring surges in a specific function, tool/vendor switches, expansion into new markets), and the single sharpest wedge — a gap or fragility from the analysis above a pitch could be built around. Tie every bullet to evidence; do not guess at a buyer persona with no supporting signal. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
   competing: `
 
-Additionally, because this teardown is being read by someone competing directly with this company, add a sixth section after Section 5 with exactly this heading:
+Additionally, because this teardown is being read by someone competing directly with this company, add a sixth section after Section 5 with exactly this heading (no number prefix):
 
-## 6. Competitive Playbook
+## Competitive Playbook
 
 3-5 tight bullets, each naming a specific segment, feature gap, pricing weakness, or churn signal from the analysis above that is most exploitable, paired with the concrete positioning wedge to attack it. Ban generic playbook advice ("compete on service", "move faster") unless tied to a specific piece of evidence about this company. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
 };
@@ -53,13 +53,13 @@ You will be given a company website URL. Use Google Search to read the site itse
 
 Begin your output with a single line formatted as "Verdict: [one sentence]" — your sharpest one-sentence take on this company, committed and specific, synthesizing the whole analysis. No hedging words (may, could, potentially). This line comes before Section 1 and replaces any title line — never output a title heading.
 
-Then produce a teardown with EXACTLY these five sections, in this order, each as a markdown heading:
+Then produce a teardown with EXACTLY these five sections, in this order, each as a markdown heading. Do not number the headings — no "1.", "2.", etc. prefix; use the plain title text exactly as written below:
 
-## 1. How They Make Money
-## 2. Competitive Position
-## 3. Traction Signals
-## 4. Fragilities
-## 5. The 3 Questions Leadership Is Debating Right Now
+## How They Make Money
+## Competitive Position
+## Traction Signals
+## Fragilities
+## The 3 Questions Leadership Is Debating Right Now
 
 Hard requirements:
 - Anchor every search and every fact strictly to the specific company at the given domain. If a search result appears to be about a different company that merely has a similar or identical-sounding name (a name collision), do not use it — verify the result actually matches this company (its domain, product, founders, or other confirmed details) before treating it as evidence. This matters most for companies with thin search footprints, where a more prominent similarly-named company can otherwise dominate the results.
