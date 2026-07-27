@@ -38,6 +38,38 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
     from the `sources` array and copies via Clipboard API. Copy Link
     builds a `?q=<companyName-or-url>&mode=<mode>` URL from the same
     origin/pathname.
+  - **Streaming (2026-07-28)** — `runTeardown()` reads `/api/teardown`'s
+    response body via `res.body.getReader()` + `TextDecoder`, buffering
+    partial lines and parsing each complete line as one NDJSON event
+    (`{type: "chunk"|"done"|"error", ...}` — see the route entry below).
+    `chunk` events accumulate into `streamingText` state, which renders
+    live through a plain, unsectioned `<ReactMarkdown>` (verdict + body,
+    no card/fragility components, no stat strip) while `phase ===
+    "loading"`. Only on the `done` event does the code set the existing
+    `result`/`sources` state and flip back to `phase: "idle"` — at which
+    point the original fully-sectioned render (cards, Fragilities
+    accent, stat strip, Copy/Sources UI) takes over exactly as before.
+    This means Copy-as-Markdown, Copy Link, and the Sources list are
+    only ever reachable once `result` is set, i.e. only after the
+    stream fully completes — enforced by them living inside the
+    pre-existing `{result && (...)}` block, which the live-streaming
+    block is a sibling of, not a replacement for. An `error` event
+    (mid-stream failure) or a stream that ends without ever sending
+    `done` both throw and fall into the same catch path as any other
+    fetch failure.
+  - `extractStats()` was hardened from "STATS must be the literal last
+    line" (`/\n(STATS:\s*.*)$/`, anchored to end-of-string) to `text.
+    lastIndexOf("\nSTATS:")` — finds the line wherever it is and
+    discards it plus everything after. Needed because (a) applying the
+    old regex to the live, still-growing `streamingText` would only
+    ever match once the model had *finished* emitting the STATS line
+    and nothing else followed — true for the final state, but the more
+    important reason is (b) the model occasionally appends stray
+    content after STATS (observed once: a bare list of citation URLs on
+    trailing lines), which broke the old end-anchored regex entirely
+    and left the raw `STATS: ...` line visible in the rendered body.
+    The new version handles both the common case (STATS truly last) and
+    the trailing-junk case identically. See Bugs found and fixed.
 - `src/app/api/teardown/route.ts` — model `gemini-2.5-flash` via
   `@google/genai` v2.13.0 on Vertex AI / Gemini Enterprise Agent Platform,
   `tools: [{ googleSearch: {} }]`. System prompt enforces: a
@@ -58,6 +90,35 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   sections, and a trailing 6-field `STATS:` line (Founded/Funding/
   Headcount/HQ/Revenue/Growth). Citations from
   `groundingMetadata.groundingChunks[].web.{uri,title}`.
+  - **Streaming (2026-07-28)** — calls `ai.models.generateContentStream()`
+    instead of `generateContent()`, returning `Promise<AsyncGenerator
+    <GenerateContentResponse>>`. The route wraps a `for await` over that
+    generator in a Web `ReadableStream`, and for each yielded chunk:
+    reuses `extractResponseText()` unchanged (so thought-part filtering
+    is identical to the non-streaming path) and, if it produced text,
+    enqueues an NDJSON line `{"type":"chunk","text":"..."}\n`; separately
+    accumulates that chunk's `groundingMetadata.groundingChunks` into a
+    `Map` keyed by URI (same dedup logic the old single-response path
+    used, just fed incrementally instead of all at once — grounding
+    metadata isn't guaranteed to land on any particular chunk, so all of
+    them are checked). Once the generator is exhausted, sends one final
+    `{"type":"done","sources":[...]}\n` line (or `{"type":"error",
+    "message":...}\n` if no text was ever produced, or if the generator
+    itself threw mid-stream) and closes the stream — `TEARDOWN_OK`/`FAIL`
+    logging fires at that point either way, unchanged in content from the
+    non-streaming version, just relocated to fire on stream-completion
+    instead of on function-return. Response headers: `Content-Type:
+    application/x-ndjson`, `Cache-Control: no-cache, no-transform`,
+    `X-Accel-Buffering: no` (defensive against proxy buffering); route
+    also declares `export const dynamic = "force-dynamic"`.
+    Rate limiting, body-size/content validation, and client-creation
+    failures are all unchanged and still return a normal
+    `NextResponse.json({error}, {status})` before any stream opens —
+    only failures *after* streaming has begun (mid-stream Gemini errors)
+    can no longer change the HTTP status code, since headers are already
+    committed to 200; those are signaled via the `error` NDJSON event
+    instead. See Shipped and verified / Bugs found and fixed for the
+    Vercel-specific verification story.
   - **Use-case modes** — `mode` param (`general` default, `investing`,
     `interviewing`, `selling`, `competing`). Non-general modes append one
     `MODE_SECTION_PROMPTS[mode]` block to the base system prompt, adding
@@ -65,7 +126,14 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
     Questions to Ask Their Leadership / Sales Intelligence / Competitive
     Playbook)
     without altering Sections 1–5 or the Verdict line. Logged in
-    `TEARDOWN_OK`/`FAIL`.
+    `TEARDOWN_OK`/`FAIL`. The `STATS:` instruction and the final "output
+    valid markdown" bullet live in a separate `STATS_AND_FORMAT_SUFFIX`
+    constant that's always concatenated *last* — after the mode block,
+    not before it (`SYSTEM_PROMPT + MODE_SECTION_PROMPTS[mode] +
+    STATS_AND_FORMAT_SUFFIX`) — specifically so the model has already
+    been told about the mode's 6th section by the time it reads "after
+    your last section, add STATS". See Bugs found and fixed for why this
+    mattered.
   - **Identity anchoring** — the route accepts optional `companyName`/
     `companyDescriptor` in the request body (forwarded by the frontend
     from the resolve step). When present and distinct from the bare
@@ -179,6 +247,54 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   `TEARDOWN_FAIL` structured logging grep-able in Vercel function logs.
 - **Deployed** on Vercel Hobby plan; live runs confirmed no function
   timeout.
+- **Streaming teardown generation** (2026-07-28) — switched `/api/teardown`
+  from a single buffered `generateContent` response to `generateContentStream`
+  + NDJSON over a `ReadableStream` (see Architecture). Verified in three
+  stages:
+  1. **Localhost**: a Python script hitting the route directly (bypassing
+     the browser) logged a timestamp per NDJSON chunk — confirmed real
+     incremental delivery (e.g. one run: 24 chunks between 17.1s and
+     26.0s, clearly spread out, not bunched at the end), and separately
+     confirmed the grounding-metadata accumulation logic works (one run
+     returned 17 real sources, correctly deduped across streamed chunks).
+     A Node script replicating the frontend's exact reader/buffering
+     logic against the live local stream (browser tooling wasn't
+     available this session — user declined the Chrome extension)
+     produced 23 incremental renders for one run, confirming the
+     frontend algorithm itself is correct end-to-end, not just the
+     backend.
+  2. **Vercel preview deployment**: pushed a `stream-teardown` branch
+     (not `main`) specifically so this could be verified against real
+     Vercel infrastructure without touching production — Vercel's
+     GitHub integration auto-builds a preview URL per branch
+     (`tearsheet-git-<branch>-<scope>.vercel.app`, discoverable via
+     `GET /repos/<owner>/<repo>/commits/<sha>/check-runs`, unauthenticated,
+     since the repo is public). The preview URL is protected by Vercel's
+     deployment-protection SSO by default (401 to unauthenticated
+     `curl`) — only the production domain is public. Ruled out the
+     classic "Vercel Node.js serverless/Lambda functions buffer the
+     whole response before sending, streaming needs Edge runtime"
+     theory by having the user check Vercel dashboard → Settings →
+     Functions: **Fluid Compute was already enabled** on this project,
+     which is Vercel's newer Node.js execution model that does support
+     true response streaming without needing Edge runtime (Edge would
+     have required rewriting the Google Cloud service-account auth flow
+     in `src/lib/gemini.ts`, which relies on Node-only APIs and almost
+     certainly wouldn't run on Edge as-is — avoided that rewrite
+     entirely). Final confirmation used a one-off script
+     (`x-vercel-protection-bypass` header + the project's "Protection
+     Bypass for Automation" secret from Vercel settings) that the user
+     ran themselves in their own terminal — not via the in-session `!`
+     prefix — specifically so the secret never entered the chat
+     transcript, matching the standing "no secrets handoff" preference.
+     Confirmed real streaming on the actual preview deployment: first
+     content at ~10-15s, full completion at ~30-60s (streaming doesn't
+     reduce total generation time, it just starts showing output
+     sooner).
+  3. **Mode-based live testing on the preview URL** surfaced a real bug
+     (STATS line visible as literal text, stat strip not rendering) —
+     see Bugs found and fixed. Re-verified clean after the fix, on the
+     same preview URL, before merging `stream-teardown` into `main`.
 
 ## Bugs found and fixed
 
@@ -250,6 +366,56 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   search-grounding non-determinism, see Known issues) but never *within*
   a single run's STATS line.
 
+- **STATS line landed before the mode's 6th section instead of after
+  it, and once broke entirely on trailing junk.** (2026-07-28, found
+  during live streaming verification with `mode=investing` selected on
+  the Vercel preview) Two compounding bugs, both in how the STATS
+  instruction interacted with use-case modes:
+  1. **Ordering**: the STATS instruction ("after your last section, add
+     STATS") sat inside the base `SYSTEM_PROMPT`, which is concatenated
+     *before* `MODE_SECTION_PROMPTS[mode]` (`SYSTEM_PROMPT +
+     MODE_SECTION_PROMPTS[mode]`). At the point the model reads "your
+     last section," it hasn't yet been told a 6th section is required —
+     that instruction comes later in the same prompt — so it reasonably
+     placed STATS right after Section 5, then added the 6th section
+     after that per the later instruction, leaving STATS stranded in
+     the middle of the output instead of at the true end. This only
+     reproduced with a non-general mode selected; general mode (5
+     sections, no appended block) was unaffected, which is why it
+     wasn't caught in earlier testing. Fixed by splitting the STATS +
+     output-format bullets into their own `STATS_AND_FORMAT_SUFFIX`
+     constant and always appending it *last*, after the mode block:
+     `SYSTEM_PROMPT + MODE_SECTION_PROMPTS[mode] +
+     STATS_AND_FORMAT_SUFFIX`. No wording changed on the STATS bullet
+     itself (deliberately — see the "Sources silently went missing" bug
+     above for what happens when that instruction's wording gets
+     touched carelessly); only its position in the concatenated prompt
+     moved.
+  2. **Trailing junk breaking extraction**: while investigating (1),
+     found one generation where the model appended a bare list of
+     citation URLs as plain text *after* the STATS line. The frontend's
+     `extractStats()` required STATS to be the literal last line of the
+     response (`/\n(STATS:\s*.*)$/`, anchored to end-of-string) — with
+     anything trailing it, the regex simply didn't match at all, so
+     *neither* the STATS line nor the junk after it got stripped, and
+     the stat strip never rendered (0 fields parsed). Fixed by switching
+     to `text.lastIndexOf("\nSTATS:")` plus taking everything up to that
+     point as the body — finds the line wherever it is and discards it
+     and anything after, rather than requiring an exact end-of-string
+     match. Same behavior for the common case (STATS truly is the last
+     thing), now also correct when it isn't.
+
+  Verified via direct streaming API calls with `mode=investing` and
+  `mode=interviewing` against localhost: STATS line lands after the
+  6th section (`## Diligence Notes` / `## 5 Sharp Questions to Ask
+  Their Leadership`) in both. A small standalone script covering 4
+  cases (STATS with trailing junk, STATS as clean last line, `STATS:
+  none`, and no STATS line at all — malformed output) confirmed
+  `extractStats()`'s new logic handles all four correctly. Re-tested
+  live on the Vercel preview with a mode selected after deploying the
+  fix — user confirmed clean: no visible STATS line, stat strip
+  rendered correctly.
+
 ## Deferred
 
 Not implemented: rating widget, confidence footer, run-diffing.
@@ -307,6 +473,17 @@ Not implemented: rating widget, confidence footer, run-diffing.
   components against real API output), CSS specificity analysis where
   applicable, and manual in-browser checks done separately (mobile
   check at ~390-400px was done this way, in Chrome dev tools).
+- **Vercel preview deployments are behind SSO deployment protection by
+  default** — `curl`/scripts get a 401 unless they send
+  `x-vercel-protection-bypass: <secret>` with the project's "Protection
+  Bypass for Automation" secret (Vercel dashboard → Settings →
+  Deployment Protection). Only the production domain
+  (`tearsheet-iota.vercel.app`) is publicly reachable without it. The
+  preview URL for a given branch follows
+  `tearsheet-git-<branch-slug>-<vercel-scope>.vercel.app` and can be
+  discovered without any auth via GitHub's check-runs API (`GET
+  /repos/amay007/tearsheet/commits/<sha>/check-runs` — the repo is
+  public) even before the deploy finishes.
 
 ## Running and deploying
 
