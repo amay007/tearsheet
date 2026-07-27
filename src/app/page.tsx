@@ -57,12 +57,17 @@ function splitVerdict(text: string): { verdict: string | null; body: string } {
 type Stats = Partial<Record<"founded" | "funding" | "headcount" | "hq" | "revenue" | "growth", string>>;
 
 function extractStats(text: string): { stats: Stats; textWithoutStats: string } {
-  const trimmed = text.trimEnd();
-  const match = trimmed.match(/\n(STATS:\s*.*)$/);
-  if (!match) return { stats: {}, textWithoutStats: text };
+  // Find the STATS line wherever it is, not just as the literal last line — the model
+  // occasionally appends stray trailing content (e.g. a bare citation list) after it.
+  // Everything from the STATS line onward is discarded, not just the line itself.
+  const markerIndex = text.lastIndexOf("\nSTATS:");
+  if (markerIndex === -1) return { stats: {}, textWithoutStats: text };
 
-  const textWithoutStats = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
-  const value = match[1].replace(/^STATS:\s*/, "").trim();
+  const textWithoutStats = text.slice(0, markerIndex).trimEnd();
+  const lineStart = markerIndex + 1;
+  const lineEnd = text.indexOf("\n", lineStart);
+  const statsLine = lineEnd === -1 ? text.slice(lineStart) : text.slice(lineStart, lineEnd);
+  const value = statsLine.replace(/^STATS:\s*/, "").trim();
   if (!value || /^none$/i.test(value)) return { stats: {}, textWithoutStats };
 
   const stats: Stats = {};
