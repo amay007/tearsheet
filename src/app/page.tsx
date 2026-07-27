@@ -218,7 +218,12 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
       const res = await fetch("/api/teardown", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: domain, mode }),
+        body: JSON.stringify({
+          url: domain,
+          mode,
+          companyName: confirmationInfo.name,
+          companyDescriptor: confirmationInfo.descriptor,
+        }),
         signal: controller.signal,
       });
 

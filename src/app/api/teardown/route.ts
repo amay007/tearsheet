@@ -62,6 +62,7 @@ Then produce a teardown with EXACTLY these five sections, in this order, each as
 ## 5. The 3 Questions Leadership Is Debating Right Now
 
 Hard requirements:
+- Anchor every search and every fact strictly to the specific company at the given domain. If a search result appears to be about a different company that merely has a similar or identical-sounding name (a name collision), do not use it — verify the result actually matches this company (its domain, product, founders, or other confirmed details) before treating it as evidence. This matters most for companies with thin search footprints, where a more prominent similarly-named company can otherwise dominate the results.
 - Every non-trivial claim must carry an inline evidence citation in parentheses, e.g. "(per their pricing page)", "(per their Series B announcement)", "(per a 2024 TechCrunch report)", "(per a Glassdoor review from an ex-employee)". If you cannot find evidence for a claim, do not make the claim.
 - Write in short, dense paragraphs or tight bullet lists. No throat-clearing, no "In today's competitive landscape...", no restating the company's own marketing copy as if it were analysis.
 - Banned filler: generic phrases like "innovative solutions", "cutting-edge", "customer-centric", "leverage synergies", "disruptive", "world-class", "seamless experience", "unlock value" — do not use these unless directly quoting a source, and if you quote them, mark it as marketing language, not analysis.
@@ -92,10 +93,15 @@ export async function POST(req: NextRequest) {
 
   let rawUrl: string;
   let mode: Mode;
+  let companyName: string | undefined;
+  let companyDescriptor: string | undefined;
   try {
     const body = await req.json();
     rawUrl = typeof body?.url === "string" ? body.url : "";
     mode = parseMode(body?.mode);
+    companyName = typeof body?.companyName === "string" ? body.companyName.trim().slice(0, 200) || undefined : undefined;
+    companyDescriptor =
+      typeof body?.companyDescriptor === "string" ? body.companyDescriptor.trim().slice(0, 200) || undefined : undefined;
   } catch {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
@@ -117,6 +123,11 @@ export async function POST(req: NextRequest) {
   const domain = new URL(normalizedUrl as string).hostname;
   const startTime = Date.now();
 
+  const hasVerifiedIdentity = Boolean(companyName && companyName.toLowerCase() !== domain.toLowerCase());
+  const identityAnchor = hasVerifiedIdentity
+    ? ` This company operates under the name "${companyName}"${companyDescriptor ? ` — ${companyDescriptor}` : ""} at the domain ${domain}. The domain ${domain} is the ground truth for which company you are analyzing. Be aware that more than one real company — even in the same country and same line of business — can share this exact name; a same-name, same-industry company is NOT automatically the same company as the one at this domain. Before using any fact from a search result, confirm it is actually tied to ${domain} specifically (the result mentions, links to, or is clearly about the company running this exact site) — not merely a company with the same or a similar name and a similar-sounding business. If you cannot confirm a result belongs to ${domain}, do not use it, and say explicitly that a fact (e.g. funding, founding year) could not be confirmed for this specific company rather than reporting a number that may belong to a different, same-named company.`
+    : "";
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -125,7 +136,7 @@ export async function POST(req: NextRequest) {
           role: "user",
           parts: [
             {
-              text: `Company website: ${normalizedUrl}\n\nRead this site and search for independent, current information about this company (funding, news, reviews, competitors). Then produce the teardown following the required structure exactly.`,
+              text: `Company website: ${normalizedUrl}\n\nRead this site and search for independent, current information about this company (funding, news, reviews, competitors).${identityAnchor} Then produce the teardown following the required structure exactly.`,
             },
           ],
         },
