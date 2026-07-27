@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, Fragment } from "react";
+import { useState, useRef, useEffect, use, Fragment } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import { MAX_INPUT_LENGTH, classifyCompanyInput } from "@/lib/companyUrl";
@@ -28,6 +28,25 @@ const LOADING_MESSAGES = [
 ];
 
 const GENERIC_ERROR = "Something went wrong generating this teardown. Please try again in a minute.";
+
+function buildMarkdownExport(verdict: string | null, body: string, sources: Source[]): string {
+  const parts: string[] = [];
+  if (verdict) parts.push(`Verdict: ${verdict}`);
+  parts.push(body.trim());
+  if (sources.length > 0) {
+    parts.push(`## Sources\n${sources.map((s) => `- [${s.title}](${s.uri})`).join("\n")}`);
+  }
+  return parts.join("\n\n");
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function splitVerdict(text: string): { verdict: string | null; body: string } {
   const match = text.match(/^Verdict:\s*(.+?)\s*\n+([\s\S]*)$/);
@@ -128,9 +147,19 @@ const cardComponents: Components = { ol: CardOrderedList, ul: CardUnorderedList,
 const FragilityListItem: Components["li"] = ({ children }) => <li className="fragility-item">{children}</li>;
 const fragilityComponents: Components = { li: FragilityListItem };
 
-export default function Home() {
-  const [url, setUrl] = useState("");
-  const [mode, setMode] = useState<Mode>("general");
+type SearchParams = { [key: string]: string | string[] | undefined };
+
+export default function Home({ searchParams }: { searchParams: Promise<SearchParams> }) {
+  const resolvedSearchParams = use(searchParams);
+  const initialQuery = resolvedSearchParams.q;
+  const initialModeParam = resolvedSearchParams.mode;
+
+  const [url, setUrl] = useState(typeof initialQuery === "string" ? initialQuery : "");
+  const [mode, setMode] = useState<Mode>(() =>
+    typeof initialModeParam === "string" && MODES.some((entry) => entry.key === initialModeParam)
+      ? (initialModeParam as Mode)
+      : "general"
+  );
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -139,6 +168,8 @@ export default function Home() {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [linkState, setLinkState] = useState<"idle" | "copied" | "failed">("idle");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const submittingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -288,6 +319,25 @@ export default function Home() {
     }
   }
 
+  async function handleCopyMarkdown(verdict: string | null, body: string) {
+    const markdown = buildMarkdownExport(verdict, body, sources);
+    const ok = await copyToClipboard(markdown);
+    setCopyState(ok ? "copied" : "failed");
+    setTimeout(() => setCopyState("idle"), 2000);
+  }
+
+  async function handleCopyLink() {
+    const params = new URLSearchParams();
+    const query = confirmation?.name ?? url.trim();
+    if (query) params.set("q", query);
+    if (mode !== "general") params.set("mode", mode);
+    const qs = params.toString();
+    const shareUrl = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ""}`;
+    const ok = await copyToClipboard(shareUrl);
+    setLinkState(ok ? "copied" : "failed");
+    setTimeout(() => setLinkState("idle"), 2000);
+  }
+
   function handleChoiceClick(match: Match) {
     if (submittingRef.current) return;
     submittingRef.current = true;
@@ -421,6 +471,22 @@ export default function Home() {
           const confidentStatCount = Object.keys(stats).length;
           return (
           <article className="teardown flex flex-col gap-6 rounded-xl border border-black/10 dark:border-white/15 px-6 py-8 sm:px-10 sm:py-10">
+            <div className="flex flex-wrap items-center justify-end gap-2 -mb-2 -mt-2">
+              <button
+                type="button"
+                onClick={() => handleCopyMarkdown(verdict, body)}
+                className="rounded-md border border-black/10 dark:border-white/15 px-2.5 py-1 text-xs text-black/60 dark:text-white/60 hover:border-black/30 dark:hover:border-white/40 hover:text-black dark:hover:text-white transition-colors"
+              >
+                {copyState === "copied" ? "Copied!" : copyState === "failed" ? "Copy failed" : "Copy as Markdown"}
+              </button>
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                className="rounded-md border border-black/10 dark:border-white/15 px-2.5 py-1 text-xs text-black/60 dark:text-white/60 hover:border-black/30 dark:hover:border-white/40 hover:text-black dark:hover:text-white transition-colors"
+              >
+                {linkState === "copied" ? "Link copied!" : linkState === "failed" ? "Copy failed" : "Copy Link"}
+              </button>
+            </div>
             {verdict && <p className="verdict-line">{verdict}</p>}
             {confidentStatCount >= 2 && <StatStrip stats={stats} />}
 

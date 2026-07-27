@@ -13,9 +13,25 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const SITE_URL = "https://tearsheet-iota.vercel.app";
+const SITE_DESCRIPTION = "Blunt, evidence-backed company teardowns from a website URL.";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "TearSheet",
-  description: "Blunt, evidence-backed company teardowns from a website URL.",
+  description: SITE_DESCRIPTION,
+  openGraph: {
+    title: "TearSheet",
+    description: SITE_DESCRIPTION,
+    url: SITE_URL,
+    siteName: "TearSheet",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "TearSheet",
+    description: SITE_DESCRIPTION,
+  },
 };
 
 export default function RootLayout({
