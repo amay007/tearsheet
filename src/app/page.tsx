@@ -57,12 +57,17 @@ function splitVerdict(text: string): { verdict: string | null; body: string } {
 type Stats = Partial<Record<"founded" | "funding" | "headcount" | "hq" | "revenue" | "growth", string>>;
 
 function extractStats(text: string): { stats: Stats; textWithoutStats: string } {
-  const trimmed = text.trimEnd();
-  const match = trimmed.match(/\n(STATS:\s*.*)$/);
-  if (!match) return { stats: {}, textWithoutStats: text };
+  // Find the STATS line wherever it is, not just as the literal last line — the model
+  // occasionally appends stray trailing content (e.g. a bare citation list) after it.
+  // Everything from the STATS line onward is discarded, not just the line itself.
+  const markerIndex = text.lastIndexOf("\nSTATS:");
+  if (markerIndex === -1) return { stats: {}, textWithoutStats: text };
 
-  const textWithoutStats = trimmed.slice(0, trimmed.length - match[0].length).trimEnd();
-  const value = match[1].replace(/^STATS:\s*/, "").trim();
+  const textWithoutStats = text.slice(0, markerIndex).trimEnd();
+  const lineStart = markerIndex + 1;
+  const lineEnd = text.indexOf("\n", lineStart);
+  const statsLine = lineEnd === -1 ? text.slice(lineStart) : text.slice(lineStart, lineEnd);
+  const value = statsLine.replace(/^STATS:\s*/, "").trim();
   if (!value || /^none$/i.test(value)) return { stats: {}, textWithoutStats };
 
   const stats: Stats = {};
@@ -165,6 +170,7 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [streamingText, setStreamingText] = useState("");
   const [sources, setSources] = useState<Source[]>([]);
   const [choices, setChoices] = useState<Match[]>([]);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -196,6 +202,7 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
     setPhase("idle");
     setError(null);
     setResult(null);
+    setStreamingText("");
     setSources([]);
     setChoices([]);
     setConfirmation(null);
@@ -209,6 +216,7 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
     setPhase("loading");
     setError(null);
     setResult(null);
+    setStreamingText("");
     setSources([]);
     setElapsed(0);
     setLoadingMessageIndex(0);
@@ -229,23 +237,74 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
         signal: controller.signal,
       });
 
-      let data: { text?: string; sources?: Source[]; error?: string } | null = null;
-      try {
-        data = await res.json();
-      } catch {
-        data = null;
-      }
-
-      if (!res.ok || !data?.text) {
+      if (!res.ok) {
+        let data: { error?: string } | null = null;
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
         throw new Error(data?.error || GENERIC_ERROR);
       }
 
-      setResult(data.text);
-      setSources(data.sources ?? []);
+      if (!res.body) {
+        throw new Error(GENERIC_ERROR);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let accumulatedText = "";
+      let finalSources: Source[] = [];
+      let doneReceived = false;
+      let streamErrorMessage: string | null = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex: number;
+        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (!line.trim()) continue;
+
+          let event: { type?: string; text?: string; sources?: Source[]; message?: string } | null = null;
+          try {
+            event = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (!event) continue;
+
+          if (event.type === "chunk" && typeof event.text === "string") {
+            accumulatedText += event.text;
+            setStreamingText(accumulatedText);
+          } else if (event.type === "done") {
+            doneReceived = true;
+            finalSources = event.sources ?? [];
+          } else if (event.type === "error") {
+            streamErrorMessage = event.message || GENERIC_ERROR;
+          }
+        }
+      }
+
+      if (streamErrorMessage) {
+        throw new Error(streamErrorMessage);
+      }
+      if (!doneReceived || !accumulatedText) {
+        throw new Error(GENERIC_ERROR);
+      }
+
+      setResult(accumulatedText);
+      setSources(finalSources);
+      setStreamingText("");
       setPhase("idle");
     } catch (err) {
       if (controller.signal.aborted) return;
       setError(err instanceof Error && err.message ? err.message : GENERIC_ERROR);
+      setStreamingText("");
       setPhase("idle");
     } finally {
       submittingRef.current = false;
@@ -436,7 +495,7 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
           </div>
         )}
 
-        {phase === "loading" && (
+        {phase === "loading" && !streamingText && (
           <div className="flex flex-col items-center gap-4 py-10 text-center">
             {confirmation && (
               <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-black/60 dark:text-white/60">
@@ -464,6 +523,35 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
             </p>
           </div>
         )}
+
+        {phase === "loading" && streamingText && (() => {
+          const { textWithoutStats } = extractStats(streamingText);
+          const { verdict, body } = splitVerdict(textWithoutStats);
+          return (
+            <article className="teardown flex flex-col gap-6 rounded-xl border border-black/10 dark:border-white/15 px-6 py-8 sm:px-10 sm:py-10">
+              {confirmation && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 -mb-2 text-xs text-black/50 dark:text-white/50">
+                  <span>
+                    Analyzing <span className="font-medium text-black dark:text-white">{confirmation.name}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={resetToIdle}
+                    className="underline underline-offset-2 hover:text-black dark:hover:text-white whitespace-nowrap"
+                  >
+                    not this?
+                  </button>
+                </div>
+              )}
+              {verdict && <p className="verdict-line">{verdict}</p>}
+              <ReactMarkdown>{body}</ReactMarkdown>
+              <p className="flex items-center gap-2 text-xs text-black/40 dark:text-white/40">
+                <span className="h-3 w-3 rounded-full border-2 border-black/15 dark:border-white/20 border-t-black dark:border-t-white animate-spin" />
+                Streaming...
+              </p>
+            </article>
+          );
+        })()}
 
         {error && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400">

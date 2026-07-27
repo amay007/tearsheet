@@ -4,9 +4,15 @@ import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { categorizeGeminiError, createGenAIClient, extractResponseText } from "@/lib/gemini";
 
 export const maxDuration = 120;
+export const dynamic = "force-dynamic";
 
 const GENERIC_ERROR = "Something went wrong generating this teardown. Please try again in a minute.";
 const MAX_BODY_BYTES = 10_000;
+
+type StreamEvent =
+  | { type: "chunk"; text: string }
+  | { type: "done"; sources: { uri: string; title: string }[] }
+  | { type: "error"; message: string };
 
 export type Mode = "general" | "investing" | "interviewing" | "selling" | "competing";
 
@@ -74,8 +80,12 @@ Hard requirements:
 - If the evidence surfaces an anomaly — e.g. headcount growing while revenue estimates shrink, funding raised without matching hiring, glowing reviews alongside a spike in negative Glassdoor sentiment — do not just state both facts side by side and move on. Call out the tension explicitly and interrogate what it implies.
 - If the site or search results are thin, say so explicitly rather than inventing detail. It is better to write "Traction Signals: no public funding or usage data found (searched their press page and general web) — this is itself a signal of an early-stage or quiet company" than to fabricate numbers.
 - If a given section turned up few or no independent sources to support its claims, say so explicitly in that section (e.g. "limited independent sourcing was found for this section — treat the following with extra caution") rather than presenting it in the same confident tone as a well-sourced section.
-- In each section, you may bold AT MOST ONE figure total — the single most decisive number for that section's point (the one that resolves a contradiction, defines runway, or reveals the anomaly), wrapped in markdown bold (**like this**). Every other number in that section — other dollar figures, percentages, dates, plan names — must stay plain, unbolded text, even if it looks notable. If nothing is clearly the single most decisive figure, bold nothing in that section. Most sections should have zero bolded figures; none should ever have more than one.
-- After your last section, add one more line starting with "STATS:" giving six facts from your research above, separated by " | ": Founded=<year or ->, Funding=<total raised or ->, Headcount=<figure or ->, HQ=<city, country or ->, Revenue=<figure or ->, Growth=<percentage or ->. Each field must contain exactly ONE value — never concatenate multiple figures, never write "X or Y", never cite sources or disagreement inline in this line. If your research turned up conflicting numbers for a field (as in the contradiction-flagging rule above), do not put more than one of them here: apply the same credibility ranking you used in the prose — a disclosed/filed figure or funding announcement outranks an aggregator's modeled estimate (Tracxn, GetLatka, Owler, Growjo, Prospeo, etc.), and a more recent figure outranks an older one — and put only the single winning value in this field. The full disagreement and both figures still belong in the relevant prose section (e.g. Traction Signals) as usual; this line only ever gets the one figure you'd stand behind. Only fill in a field you found confident, well-sourced evidence for elsewhere in your research; use a dash for anything you're not confident about — never guess a value just to fill the field. Revenue and Growth are usually undisclosed for private companies — a dash for both is expected and fine. If fewer than 2 of the 6 fields are confidently known, write "STATS: none" instead.
+- In each section, you may bold AT MOST ONE figure total — the single most decisive number for that section's point (the one that resolves a contradiction, defines runway, or reveals the anomaly), wrapped in markdown bold (**like this**). Every other number in that section — other dollar figures, percentages, dates, plan names — must stay plain, unbolded text, even if it looks notable. If nothing is clearly the single most decisive figure, bold nothing in that section. Most sections should have zero bolded figures; none should ever have more than one.`;
+
+const STATS_AND_FORMAT_SUFFIX = `
+
+Hard requirements (continued):
+- After your last section — this means after every section you produce, including any additional section required by mode-specific instructions above, if present, not just Section 5 — add one more line starting with "STATS:" giving six facts from your research above, separated by " | ": Founded=<year or ->, Funding=<total raised or ->, Headcount=<figure or ->, HQ=<city, country or ->, Revenue=<figure or ->, Growth=<percentage or ->. Each field must contain exactly ONE value — never concatenate multiple figures, never write "X or Y", never cite sources or disagreement inline in this line. If your research turned up conflicting numbers for a field (as in the contradiction-flagging rule above), do not put more than one of them here: apply the same credibility ranking you used in the prose — a disclosed/filed figure or funding announcement outranks an aggregator's modeled estimate (Tracxn, GetLatka, Owler, Growjo, Prospeo, etc.), and a more recent figure outranks an older one — and put only the single winning value in this field. The full disagreement and both figures still belong in the relevant prose section (e.g. Traction Signals) as usual; this line only ever gets the one figure you'd stand behind. Only fill in a field you found confident, well-sourced evidence for elsewhere in your research; use a dash for anything you're not confident about — never guess a value just to fill the field. Revenue and Growth are usually undisclosed for private companies — a dash for both is expected and fine. If fewer than 2 of the 6 fields are confidently known, write "STATS: none" instead.
 - Output valid markdown. Do not wrap the whole response in a code block.`;
 
 export async function POST(req: NextRequest) {
@@ -130,8 +140,9 @@ export async function POST(req: NextRequest) {
     ? ` This company operates under the name "${companyName}"${companyDescriptor ? ` — ${companyDescriptor}` : ""} at the domain ${domain}. The domain ${domain} is the ground truth for which company you are analyzing. Be aware that more than one real company — even in the same country and same line of business — can share this exact name; a same-name, same-industry company is NOT automatically the same company as the one at this domain. Before using any fact from a search result, confirm it is actually tied to ${domain} specifically (the result mentions, links to, or is clearly about the company running this exact site) — not merely a company with the same or a similar name and a similar-sounding business. If you cannot confirm a result belongs to ${domain}, do not use it, and say explicitly that a fact (e.g. funding, founding year) could not be confirmed for this specific company rather than reporting a number that may belong to a different, same-named company.`
     : "";
 
+  let geminiStream;
   try {
-    const response = await ai.models.generateContent({
+    geminiStream = await ai.models.generateContentStream({
       model: "gemini-2.5-flash",
       contents: [
         {
@@ -145,35 +156,70 @@ export async function POST(req: NextRequest) {
       ],
       config: {
         systemInstruction:
-          mode === "general" ? SYSTEM_PROMPT : SYSTEM_PROMPT + MODE_SECTION_PROMPTS[mode],
+          mode === "general"
+            ? SYSTEM_PROMPT + STATS_AND_FORMAT_SUFFIX
+            : SYSTEM_PROMPT + MODE_SECTION_PROMPTS[mode] + STATS_AND_FORMAT_SUFFIX,
         tools: [{ googleSearch: {} }],
       },
     });
-
-    const text = extractResponseText(response);
-    if (!text) {
-      const duration = Math.round((Date.now() - startTime) / 1000);
-      console.error("Gemini generateContent returned an empty response.");
-      console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=empty_response`);
-      return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
-    }
-
-    const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
-    const sources = (groundingMetadata?.groundingChunks ?? [])
-      .map((chunk) => chunk.web)
-      .filter((web): web is { uri?: string; title?: string } => Boolean(web?.uri))
-      .map((web) => ({ uri: web.uri as string, title: web.title || web.uri || "" }));
-
-    const uniqueSources = Array.from(new Map(sources.map((s) => [s.uri, s])).values());
-
-    const duration = Math.round((Date.now() - startTime) / 1000);
-    console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode}`);
-
-    return NextResponse.json({ text, sources: uniqueSources });
   } catch (err) {
     const duration = Math.round((Date.now() - startTime) / 1000);
-    console.error("Gemini generateContent failed:", err);
+    console.error("Gemini generateContentStream failed to start:", err);
     console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=${categorizeGeminiError(err)}`);
     return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
   }
+
+  const encoder = new TextEncoder();
+  const sourcesByUri = new Map<string, { uri: string; title: string }>();
+  let sawText = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: StreamEvent) => controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+
+      try {
+        for await (const chunk of geminiStream) {
+          const text = extractResponseText(chunk);
+          if (text) {
+            sawText = true;
+            send({ type: "chunk", text });
+          }
+
+          const groundingChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+          for (const gc of groundingChunks) {
+            const web = gc.web;
+            if (web?.uri && !sourcesByUri.has(web.uri)) {
+              sourcesByUri.set(web.uri, { uri: web.uri, title: web.title || web.uri });
+            }
+          }
+        }
+
+        const duration = Math.round((Date.now() - startTime) / 1000);
+        if (!sawText) {
+          console.error("Gemini generateContentStream produced no text.");
+          console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=empty_response`);
+          send({ type: "error", message: GENERIC_ERROR });
+        } else {
+          console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode}`);
+          send({ type: "done", sources: Array.from(sourcesByUri.values()) });
+        }
+      } catch (err) {
+        const duration = Math.round((Date.now() - startTime) / 1000);
+        console.error("Gemini generateContentStream failed mid-stream:", err);
+        console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=${categorizeGeminiError(err)}`);
+        send({ type: "error", message: GENERIC_ERROR });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }
