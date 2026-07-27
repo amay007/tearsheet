@@ -110,6 +110,21 @@ function StatStrip({ stats }: { stats: Stats }) {
   );
 }
 
+function StatStripSkeleton() {
+  return (
+    <div className="flex flex-wrap gap-x-6 gap-y-2 rounded-lg border border-black/10 dark:border-white/15 px-4 py-3">
+      {STAT_FIELDS.map((f) => (
+        <div key={f.key} className="flex flex-col gap-1 min-w-0">
+          <span className="text-[0.65rem] font-medium uppercase tracking-wide text-black/40 dark:text-white/40">
+            {f.label}
+          </span>
+          <span className="h-4 w-14 rounded bg-black/10 dark:bg-white/10 animate-pulse" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 type TeardownSection = { title: string; content: string };
 
 function parseSections(body: string): TeardownSection[] {
@@ -527,6 +542,12 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
         {phase === "loading" && streamingText && (() => {
           const { textWithoutStats } = extractStats(streamingText);
           const { verdict, body } = splitVerdict(textWithoutStats);
+          // Until the verdict line's trailing blank line has fully streamed in, splitVerdict
+          // can't split it out yet — but the raw text starts with (a prefix of) "Verdict:" the
+          // whole time, so hold off rendering the body rather than briefly flashing that label.
+          const trimmedStart = textWithoutStats.trimStart();
+          const verdictPending =
+            verdict === null && ("Verdict:".startsWith(trimmedStart) || trimmedStart.startsWith("Verdict:"));
           return (
             <article className="teardown flex flex-col gap-6 rounded-xl border border-black/10 dark:border-white/15 px-6 py-8 sm:px-10 sm:py-10">
               {confirmation && (
@@ -544,7 +565,8 @@ export default function Home({ searchParams }: { searchParams: Promise<SearchPar
                 </div>
               )}
               {verdict && <p className="verdict-line">{verdict}</p>}
-              <ReactMarkdown>{body}</ReactMarkdown>
+              <StatStripSkeleton />
+              {!verdictPending && <ReactMarkdown>{body}</ReactMarkdown>}
               <p className="flex items-center gap-2 text-xs text-black/40 dark:text-white/40">
                 <span className="h-3 w-3 rounded-full border-2 border-black/15 dark:border-white/20 border-t-black dark:border-t-white animate-spin" />
                 Streaming...
