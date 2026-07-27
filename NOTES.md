@@ -1,4 +1,4 @@
-# TearSheet — Technical Notes (last updated 2026-07-26)
+# TearSheet — Technical Notes (last updated 2026-07-27)
 
 Single-page Next.js 16 (App Router, TypeScript, Tailwind v4) app that turns a
 company name or URL into an evidence-cited "teardown" via Gemini + Google
@@ -8,9 +8,35 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
 
 - `src/app/page.tsx` — UI and client state machine: `idle → resolving →
   choices → loading`. Classifies input, calls `/api/resolve` for name
-  inputs then `/api/teardown`; renders the confirmation strip, option
-  cards, and the final markdown (Verdict line split out for distinct
-  styling). Double-submit guarded via a ref, not just `disabled` state.
+  inputs then `/api/teardown` (forwarding the resolved `companyName`/
+  `companyDescriptor`, not just the domain — see Identity anchoring
+  below); renders the confirmation strip, option cards, mode pills, and
+  the final teardown. Double-submit guarded via a ref, not just
+  `disabled` state.
+  - Reads `?q=` / `?mode=` from the page's `searchParams` prop via
+    React's `use()` (not `useEffect` + `window.location` — that pattern
+    trips the `react-hooks/set-state-in-effect` lint rule and, more
+    importantly, causes an SSR/CSR hydration mismatch on the input's
+    controlled value). This makes `/` a dynamically-rendered route.
+    Prefills the input/mode but never auto-submits.
+  - Teardown text is split into `verdict` / `body` (via `extractStats`
+    then `splitVerdict`), then `body` is split into sections on `## `
+    headings (`parseSections`). Each section renders through its own
+    `<ReactMarkdown>` instance with a `components` override chosen by
+    section title: card-list rendering (`cardComponents`) for the 3
+    Questions section and any mode's 6th section, left-border accent
+    rendering (`fragilityComponents`) for Fragilities, plain default for
+    the rest. Falls back to rendering the whole `body` unsplit if no
+    `## ` headings are found (malformed model output).
+  - `extractStats()` parses a trailing `STATS: Founded=... | Funding=...
+    | Headcount=... | HQ=...` (or `STATS: none`) line off the end of the
+    response and strips it from the displayed body. Stat strip only
+    renders when ≥2 fields are confidently known (dash-valued fields are
+    never fabricated or displayed).
+  - Copy-as-Markdown reconstructs Verdict + body + a `## Sources` list
+    from the `sources` array and copies via Clipboard API. Copy Link
+    builds a `?q=<companyName-or-url>&mode=<mode>` URL from the same
+    origin/pathname.
 - `src/app/api/teardown/route.ts` — model `gemini-2.5-flash` via
   `@google/genai` v2.13.0 on Vertex AI / Gemini Enterprise Agent Platform,
   `tools: [{ googleSearch: {} }]`. System prompt enforces: a
@@ -18,19 +44,52 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   5 fixed sections, inline citations, banned filler, explicit flagging of
   conflicting numbers (Growjo/Prospeo/Owler-style aggregators treated as
   low-confidence), business-model-not-product analysis in Section 1,
-  specific-not-generic fragilities in Section 4, exactly 3 sharp questions
-  in Section 5, anomaly interrogation instead of side-by-side listing.
-  Citations from `groundingMetadata.groundingChunks[].web.{uri,title}`.
+  Fragilities required as a bulleted list (needed so the CSS accent has
+  list items to attach to), exactly 3 sharp questions in Section 5,
+  anomaly interrogation instead of side-by-side listing, at most one
+  bolded figure per section, and a trailing `STATS:` line. Citations
+  from `groundingMetadata.groundingChunks[].web.{uri,title}`.
+  - **Use-case modes** — `mode` param (`general` default, `investing`,
+    `interviewing`, `selling`, `competing`). Non-general modes append one
+    `MODE_SECTION_PROMPTS[mode]` block to the base system prompt, adding
+    exactly one "## 6. ..." section (Diligence Notes / 5 Sharp Questions
+    to Ask Their Leadership / Sales Intelligence / Competitive Playbook)
+    without altering Sections 1–5 or the Verdict line. Logged in
+    `TEARDOWN_OK`/`FAIL`.
+  - **Identity anchoring** — the route accepts optional `companyName`/
+    `companyDescriptor` in the request body (forwarded by the frontend
+    from the resolve step). When present and distinct from the bare
+    domain, the user message gets an explicit clause naming the domain
+    as ground truth for company identity and warning that even a
+    same-name, same-country, same-industry company is not automatically
+    the same company as the one at that domain — facts must tie back to
+    the domain, not just a name/topic match. Mirrored as a system-prompt
+    hard requirement for the direct-URL-input path (no separate resolve
+    step, so no companyName to forward). Exists because the teardown
+    call's own open-ended `googleSearch` grounding has nothing else to
+    anchor to besides the domain string, and can otherwise drift to an
+    unrelated company that merely shares a name.
 - `src/app/api/resolve/route.ts` — cheap grounded lookup for name inputs.
-  Same model, `maxOutputTokens: 2048`, `thinkingConfig.thinkingBudget: 256`.
+  Same model, `maxOutputTokens: 2048`, `thinkingConfig.thinkingBudget:
+  1024` (bumped from 256 — the disambiguation logic below needs more
+  room to actually execute a two-step check, not just pattern-match).
   Returns a strict JSON array of `{name, oneLineDescriptor, domain,
-  confidence}` — one entry when a company is clearly dominant, 2–3 when
-  genuinely ambiguous, `[]` when nothing matches. Parser tolerates prose or
-  code-fences around the array instead of requiring an exact match, and
-  drops entries with a malformed or non-domain-shaped `domain`. Parse
-  failures and true no-matches both show the same friendly "couldn't find"
-  message to the user, while staying distinguishable server-side
-  (`RESOLVE_OK`/`RESOLVE_AMBIGUOUS`/`RESOLVE_FAIL`).
+  confidence}` — one entry when only one company clears the bar below,
+  2–3 when genuinely ambiguous, `[]` when nothing matches. System prompt
+  is an explicit process: (1) find the best match, (2) check for a
+  second real company anywhere in the world under essentially the same
+  name, (3) only count it as ambiguity if its brand name is essentially
+  identical (not just a shared word inside a longer, different business
+  name) AND it's independently notable (funding/press/real users, not a
+  tiny local business) AND a reasonable person could plausibly have
+  meant either — critically, evaluated on each candidate's own
+  legitimacy, not its size relative to the other candidate. Parser
+  tolerates prose or code-fences around the array instead of requiring
+  an exact match, and drops entries with a malformed or non-domain-shaped
+  `domain`. Parse failures and true no-matches both show the same
+  friendly "couldn't find" message to the user, while staying
+  distinguishable server-side (`RESOLVE_OK`/`RESOLVE_AMBIGUOUS`/
+  `RESOLVE_FAIL`).
 - `src/lib/companyUrl.ts` — `classifyCompanyInput()`: URL only if the input
   is domain-shaped (dot, no spaces, plausible TLD, parses as a hostname);
   otherwise a name. Also `normalizeCompanyUrl()`, `validateInput()`. Return
@@ -45,12 +104,24 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   budget.
 - Response assembly filters `part.thought` in both routes, so no leaked
   model reasoning reaches the screen.
+- `src/app/globals.css` — `.card-list`/`.card-list-ordered`/
+  `.card-list-item`/`.fragility-item` selectors are all prefixed with
+  `.teardown` specifically so they out-specificity `.teardown ol`/
+  `.teardown ul` (see Known issues: this was the double-numbering bug).
+  Ordered-card numbering is pure CSS (`counter-reset`/`counter-increment`
+  + `::before`), not derived from list position in JS.
+- `src/app/layout.tsx` — `metadataBase` + explicit `openGraph`/`twitter`
+  metadata (title/description/image) so shared links unfurl with real
+  content instead of Next.js defaults.
+- `src/app/opengraph-image.tsx`, `src/app/icon.tsx` — code-generated via
+  `next/og`'s `ImageResponse` (1200×630 branded OG image, 32×32 favicon),
+  not static image files.
 
 ## Shipped and verified
 
-- **Core teardown flow** — validated across 10+ live runs, including a
-  company-name-collision case correctly disambiguated. `npx tsc --noEmit`
-  / `npx eslint .` clean.
+- **Core teardown flow** — validated across many live runs, including
+  company-name-collision cases correctly disambiguated. `npx tsc
+  --noEmit` / `npx eslint .` clean.
 - **Verdict line** (2026-07-26) — verified live: no title heading leaked,
   no banned hedge words, rendered distinctly (`.verdict-line`, 1.35rem/700)
   instead of passing through ReactMarkdown.
@@ -62,23 +133,105 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   interacting with the `googleSearch` tool, causing repeated/looping
   output truncated mid-JSON — fixed by tuning the budget/token cap and
   making the JSON parser tolerant of prose/fences around the array.
+- **Use-case mode pills** (2026-07-27) — General/Investing/Interviewing
+  there/Selling to them/Competing with them, mobile-safe (flex-wrap) row
+  below the input. Verified General mode leaves Sections 1–5 and Verdict
+  byte-for-byte structurally unchanged; verified Interviewing mode adds
+  exactly one correctly-formatted 6th section. Switching pills after a
+  result is shown clears the stale result without auto-regenerating.
+- **Visual pass** (2026-07-27) — bordered cards for Section 5 and any
+  mode's 6th section, left-border accent on Fragilities, at most one
+  bolded figure per section (model-side rule, tightened after an early
+  version let it bold several), compact Founded/Funding/Headcount/HQ
+  stat strip below the Verdict (skipped when <2 fields are confidently
+  known, dash-filled otherwise, never fabricated).
+- **Copy/share/favicon/OG** (2026-07-27) — Copy as Markdown, Copy Link
+  (`?q=&mode=` prefill deep link), code-generated favicon and OG image,
+  explicit `openGraph`/`twitter` metadata. Verified production build
+  succeeds, OG image/favicon both resolve as valid PNGs, deep-link
+  prefill populates the input and mode pill correctly.
 - **Analytics** — Vercel Analytics on the root layout; `TEARDOWN_OK`/
   `TEARDOWN_FAIL` structured logging grep-able in Vercel function logs.
 - **Deployed** on Vercel Hobby plan; live runs confirmed no function
   timeout.
 
+## Bugs found and fixed (2026-07-27, same evening as the visual pass)
+
+- **Sources silently went missing.** The trailing `STATS: ...` line
+  instruction added during the visual pass — originally framed as "the
+  absolute last line of your entire output, nothing follows it, no
+  markdown formatting" — caused `gemini-2.5-flash` to skip the
+  `googleSearch` tool entirely on some calls (0 grounding chunks, 0 web
+  search queries, shorter/faster responses reading as generated from
+  parametric memory). Isolated via a direct A/B script against the
+  Gemini API bypassing the Next.js route: the pre-existing prompt
+  reliably grounded (28–31 chunks) on the same domain; the STATS block
+  in isolation reproduced 0 chunks/0 queries. Fixed by rewording it as a
+  normal trailing bullet folded into the existing hard-requirements list
+  instead of a separate, highly prescriptive "final line" contract.
+  Verified restored (22+ real sources) through the actual app afterward.
+- **Resolve prompt was over-suppressing genuine ambiguity, then
+  over-correcting.** The old prompt gated multi-candidate results on the
+  two companies being of "comparable size or prominence" to *each
+  other*, letting a big company's fame silently suppress a smaller but
+  still real, notable company sharing its name (`snabbit` non-
+  deterministically returning only one of two real, unrelated
+  companies). First fix (evaluate each candidate's legitimacy
+  independently, drop the "comparable to the other" gate) over-
+  corrected: `stripe` briefly started returning unrelated small
+  businesses ("Stripes Design", "Stripe Design Services") that merely
+  share a word, not the same name. Final version requires an *
+  essentially identical* brand name (not a substring/loose match) *and*
+  independent notability before counting as ambiguity. Verified: `clay`
+  and `wave` correctly return their real distinct namesakes; `stripe`
+  and `zetwerk` correctly stay single-match. `snabbit` itself remains
+  the hardest case — see Known issues.
+- **Teardown could analyze the wrong company entirely.** The frontend
+  resolved companies correctly but only ever forwarded the bare domain
+  to `/api/teardown`, discarding the verified name/descriptor. The
+  teardown call's own independent `googleSearch` grounding, given only a
+  domain string, could drift to a different company that merely shares
+  a name (reproduced case: a `snabbit.com` teardown coming back about a
+  Swedish cloud-infrastructure company instead of the Indian
+  home-services one). Fixed via the Identity anchoring mechanism
+  described in Architecture above. Verified across 6 real teardown runs
+  on `snabbit.com`: zero mentions of the wrong company in any run.
+- **Double-numbering on ordered card lists.** `.card-list`/
+  `.card-list-ordered`/`.fragility-item` (CSS specificity 0,1,0) were
+  losing to `.teardown ol`/`.teardown ul` (specificity 0,1,1), so the
+  browser's native decimal/disc marker rendered underneath the custom
+  counter badge and accent border on every ordered-list card. Fixed by
+  prefixing the card/fragility selectors with `.teardown` so they win on
+  specificity regardless of source order.
+
 ## Deferred
 
-Not implemented: use-case modes, interview mode, rating widget, confidence
-footer, run-diffing.
+Not implemented: rating widget, confidence footer, run-diffing.
 
 ## Known issues / soft edges
 
+- **Google Search grounding is non-deterministic per call**, independent
+  of prompt wording — the same exact prompt against the same domain has
+  returned anywhere from 0 to 31 grounding chunks across repeated calls
+  during testing. The STATS-line fix above removed one *systematic*
+  cause of 0-source responses; ordinary call-to-call variance in
+  whether the model chooses to search remains and isn't something a
+  prompt can fully eliminate.
+- **Same company name colliding *within the same country* is only
+  partially handled.** Domain-anchoring (above) reliably prevents
+  cross-country/cross-industry mixups (confirmed fix: Swedish vs
+  Indian "Snab(b)it"). But testing on `snabbit.com` surfaced what
+  appears to be two distinct real Indian companies both named
+  "Snabbit" (a small one, founded ~2017, no funding data; a VC-backed
+  one, founded 2024, $56M raised per TechCrunch) — the anchor reduces
+  but doesn't fully eliminate the model conflating these two, and a
+  couple of test runs produced a thin/uncertain "no data found" answer
+  instead of the funded company's real numbers. Likely intertwined with
+  the grounding non-determinism above rather than a distinct root cause.
 - `/api/resolve` occasionally returns empty model output (finishReason
   `STOP`, zero candidate tokens) on hard/garbled name inputs — reproduced
   consistently for one gibberish string during testing. Root cause not
-  isolated (thinking-budget/search-tool interaction is the leading
-  suspect). Masked by treating parse/empty-output failures the same as a
+  isolated. Masked by treating parse/empty-output failures the same as a
   clean no-match, which is correct user-facing behavior either way — but
   some resolvable names may silently show as not-found. Revisit if
   `RESOLVE_FAIL ... category=parse_error` shows up at real frequency in
@@ -88,9 +241,15 @@ footer, run-diffing.
 - No source-quality rule yet for well-covered public companies — the
   aggregator low-confidence rule was written with smaller/private
   companies in mind.
-- No automated browser test coverage in this environment — UI changes are
-  verified via `tsc`/`eslint`, curl against the API routes, and manual
-  in-browser checks.
+- No headless-browser/screenshot tooling in this environment — UI
+  changes are verified via `tsc`/`eslint`, curl against the API routes,
+  static DOM-structure checks (`react-dom/server` render of the actual
+  components against real API output), CSS specificity analysis where
+  applicable, and manual in-browser checks done separately.
+- Mobile check (~390px) for the mode pills, cards, and stat strip from
+  the visual pass is in progress — one issue found and fixed so far
+  (stat strip's flex-row tiles could refuse to wrap a long HQ value,
+  forcing horizontal overflow; fixed with `min-w-0`/`break-words`).
 
 ## Running and deploying
 
