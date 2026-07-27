@@ -8,6 +8,15 @@ type Source = { uri: string; title: string };
 type Match = { name: string; oneLineDescriptor: string; domain: string; confidence: "high" | "medium" | "low" };
 type Confirmation = { name: string; descriptor?: string };
 type Phase = "idle" | "resolving" | "choices" | "loading";
+type Mode = "general" | "investing" | "interviewing" | "selling" | "competing";
+
+const MODES: { key: Mode; label: string }[] = [
+  { key: "general", label: "General" },
+  { key: "investing", label: "Investing" },
+  { key: "interviewing", label: "Interviewing there" },
+  { key: "selling", label: "Selling to them" },
+  { key: "competing", label: "Competing with them" },
+];
 
 const LOADING_MESSAGES = [
   "Reading the site...",
@@ -27,6 +36,7 @@ function splitVerdict(text: string): { verdict: string | null; body: string } {
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  const [mode, setMode] = useState<Mode>("general");
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -83,7 +93,7 @@ export default function Home() {
       const res = await fetch("/api/teardown", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: domain }),
+        body: JSON.stringify({ url: domain, mode }),
         signal: controller.signal,
       });
 
@@ -174,6 +184,16 @@ export default function Home() {
     await resolveCompanyName(classified.name);
   }
 
+  function handleModeClick(newMode: Mode) {
+    if (phase === "loading" || phase === "resolving") return;
+    if (newMode === mode) return;
+    setMode(newMode);
+    if (result) {
+      setResult(null);
+      setSources([]);
+    }
+  }
+
   function handleChoiceClick(match: Match) {
     if (submittingRef.current) return;
     submittingRef.current = true;
@@ -208,6 +228,24 @@ export default function Home() {
             {phase === "loading" ? "Generating..." : phase === "resolving" ? "Looking up..." : "Generate Teardown"}
           </button>
         </form>
+
+        <div className="flex flex-wrap justify-center gap-2">
+          {MODES.map((m) => (
+            <button
+              key={m.key}
+              type="button"
+              onClick={() => handleModeClick(m.key)}
+              disabled={phase === "loading" || phase === "resolving"}
+              className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                mode === m.key
+                  ? "bg-black text-white border-black dark:bg-white dark:text-black dark:border-white"
+                  : "border-black/15 text-black/70 hover:border-black/30 dark:border-white/20 dark:text-white/70 dark:hover:border-white/40"
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
 
         {phase === "resolving" && (
           <div className="flex flex-col items-center gap-3 py-10 text-center">

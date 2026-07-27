@@ -8,6 +8,45 @@ export const maxDuration = 120;
 const GENERIC_ERROR = "Something went wrong generating this teardown. Please try again in a minute.";
 const MAX_BODY_BYTES = 10_000;
 
+export type Mode = "general" | "investing" | "interviewing" | "selling" | "competing";
+
+const MODES: Mode[] = ["general", "investing", "interviewing", "selling", "competing"];
+
+function parseMode(value: unknown): Mode {
+  return typeof value === "string" && (MODES as string[]).includes(value) ? (value as Mode) : "general";
+}
+
+const MODE_SECTION_PROMPTS: Record<Exclude<Mode, "general">, string> = {
+  investing: `
+
+Additionally, because this teardown is being read by someone deciding whether to invest, add a sixth section after Section 5 with exactly this heading:
+
+## 6. Diligence Notes
+
+List the specific, unresolved items a diligence process should chase before wiring money — each tied to a concrete gap, contradiction, or unverifiable claim surfaced above (e.g. a number only one low-confidence source supports, a metric management hasn't disclosed, a claim that contradicts a public filing or review). Do not include generic checklist boilerplate ("review the cap table", "check references") unless you attach a specific reason it matters here. 4-6 tight bullets. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
+  interviewing: `
+
+Additionally, because this teardown is being read by someone interviewing at this company, add a sixth section after Section 5 with exactly this heading:
+
+## 6. 5 Sharp Questions to Ask Their Leadership
+
+Exactly 5 questions a sharp candidate would ask a hiring manager or exec to pressure-test the fragilities and anomalies found above — phrased the way a person would actually ask them out loud, not consulting-speak. Each question must be traceable to a specific fact or tension surfaced earlier in this analysis. One idea per question; split or cut anything joined by "and". This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
+  selling: `
+
+Additionally, because this teardown is being read by someone selling into this company, add a sixth section after Section 5 with exactly this heading:
+
+## 6. Sales Intelligence
+
+Identify the likely economic buyer or decision-making function (based on org structure, job postings, or org-chart evidence), concrete buying signals (recent funding, hiring surges in a specific function, tool/vendor switches, expansion into new markets), and the single sharpest wedge — a gap or fragility from the analysis above a pitch could be built around. Tie every claim to evidence; do not guess at a buyer persona with no supporting signal. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
+  competing: `
+
+Additionally, because this teardown is being read by someone competing directly with this company, add a sixth section after Section 5 with exactly this heading:
+
+## 6. Competitive Playbook
+
+Name the specific segment, feature gap, pricing weakness, or churn signal from the analysis above that is most exploitable, and the concrete positioning wedge to attack it. Ban generic playbook advice ("compete on service", "move faster") unless tied to a specific piece of evidence about this company. This section is purely additive — it does not change Sections 1-5 or the Verdict line.`,
+};
+
 const SYSTEM_PROMPT = `You are a sharp, skeptical company analyst producing a "teardown" for a founder or investor who has ten minutes and no patience for fluff.
 
 You will be given a company website URL. Use Google Search to read the site itself and to find independent information about the company: funding rounds, press coverage, reviews, job postings, competitor commentary, pricing changes, executive departures, etc.
@@ -50,9 +89,11 @@ export async function POST(req: NextRequest) {
   }
 
   let rawUrl: string;
+  let mode: Mode;
   try {
     const body = await req.json();
     rawUrl = typeof body?.url === "string" ? body.url : "";
+    mode = parseMode(body?.mode);
   } catch {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
@@ -88,7 +129,8 @@ export async function POST(req: NextRequest) {
         },
       ],
       config: {
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction:
+          mode === "general" ? SYSTEM_PROMPT : SYSTEM_PROMPT + MODE_SECTION_PROMPTS[mode],
         tools: [{ googleSearch: {} }],
       },
     });
@@ -97,7 +139,7 @@ export async function POST(req: NextRequest) {
     if (!text) {
       const duration = Math.round((Date.now() - startTime) / 1000);
       console.error("Gemini generateContent returned an empty response.");
-      console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s category=empty_response`);
+      console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=empty_response`);
       return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
     }
 
@@ -110,13 +152,13 @@ export async function POST(req: NextRequest) {
     const uniqueSources = Array.from(new Map(sources.map((s) => [s.uri, s])).values());
 
     const duration = Math.round((Date.now() - startTime) / 1000);
-    console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s`);
+    console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode}`);
 
     return NextResponse.json({ text, sources: uniqueSources });
   } catch (err) {
     const duration = Math.round((Date.now() - startTime) / 1000);
     console.error("Gemini generateContent failed:", err);
-    console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s category=${categorizeGeminiError(err)}`);
+    console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=${categorizeGeminiError(err)}`);
     return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
   }
 }
