@@ -4,9 +4,15 @@ import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { categorizeGeminiError, createGenAIClient, extractResponseText } from "@/lib/gemini";
 
 export const maxDuration = 120;
+export const dynamic = "force-dynamic";
 
 const GENERIC_ERROR = "Something went wrong generating this teardown. Please try again in a minute.";
 const MAX_BODY_BYTES = 10_000;
+
+type StreamEvent =
+  | { type: "chunk"; text: string }
+  | { type: "done"; sources: { uri: string; title: string }[] }
+  | { type: "error"; message: string };
 
 export type Mode = "general" | "investing" | "interviewing" | "selling" | "competing";
 
@@ -130,8 +136,9 @@ export async function POST(req: NextRequest) {
     ? ` This company operates under the name "${companyName}"${companyDescriptor ? ` — ${companyDescriptor}` : ""} at the domain ${domain}. The domain ${domain} is the ground truth for which company you are analyzing. Be aware that more than one real company — even in the same country and same line of business — can share this exact name; a same-name, same-industry company is NOT automatically the same company as the one at this domain. Before using any fact from a search result, confirm it is actually tied to ${domain} specifically (the result mentions, links to, or is clearly about the company running this exact site) — not merely a company with the same or a similar name and a similar-sounding business. If you cannot confirm a result belongs to ${domain}, do not use it, and say explicitly that a fact (e.g. funding, founding year) could not be confirmed for this specific company rather than reporting a number that may belong to a different, same-named company.`
     : "";
 
+  let geminiStream;
   try {
-    const response = await ai.models.generateContent({
+    geminiStream = await ai.models.generateContentStream({
       model: "gemini-2.5-flash",
       contents: [
         {
@@ -149,31 +156,64 @@ export async function POST(req: NextRequest) {
         tools: [{ googleSearch: {} }],
       },
     });
-
-    const text = extractResponseText(response);
-    if (!text) {
-      const duration = Math.round((Date.now() - startTime) / 1000);
-      console.error("Gemini generateContent returned an empty response.");
-      console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=empty_response`);
-      return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
-    }
-
-    const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
-    const sources = (groundingMetadata?.groundingChunks ?? [])
-      .map((chunk) => chunk.web)
-      .filter((web): web is { uri?: string; title?: string } => Boolean(web?.uri))
-      .map((web) => ({ uri: web.uri as string, title: web.title || web.uri || "" }));
-
-    const uniqueSources = Array.from(new Map(sources.map((s) => [s.uri, s])).values());
-
-    const duration = Math.round((Date.now() - startTime) / 1000);
-    console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode}`);
-
-    return NextResponse.json({ text, sources: uniqueSources });
   } catch (err) {
     const duration = Math.round((Date.now() - startTime) / 1000);
-    console.error("Gemini generateContent failed:", err);
+    console.error("Gemini generateContentStream failed to start:", err);
     console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=${categorizeGeminiError(err)}`);
     return NextResponse.json({ error: GENERIC_ERROR }, { status: 502 });
   }
+
+  const encoder = new TextEncoder();
+  const sourcesByUri = new Map<string, { uri: string; title: string }>();
+  let sawText = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: StreamEvent) => controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+
+      try {
+        for await (const chunk of geminiStream) {
+          const text = extractResponseText(chunk);
+          if (text) {
+            sawText = true;
+            send({ type: "chunk", text });
+          }
+
+          const groundingChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+          for (const gc of groundingChunks) {
+            const web = gc.web;
+            if (web?.uri && !sourcesByUri.has(web.uri)) {
+              sourcesByUri.set(web.uri, { uri: web.uri, title: web.title || web.uri });
+            }
+          }
+        }
+
+        const duration = Math.round((Date.now() - startTime) / 1000);
+        if (!sawText) {
+          console.error("Gemini generateContentStream produced no text.");
+          console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=empty_response`);
+          send({ type: "error", message: GENERIC_ERROR });
+        } else {
+          console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode}`);
+          send({ type: "done", sources: Array.from(sourcesByUri.values()) });
+        }
+      } catch (err) {
+        const duration = Math.round((Date.now() - startTime) / 1000);
+        console.error("Gemini generateContentStream failed mid-stream:", err);
+        console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=${categorizeGeminiError(err)}`);
+        send({ type: "error", message: GENERIC_ERROR });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }
