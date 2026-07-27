@@ -180,7 +180,7 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
 - **Deployed** on Vercel Hobby plan; live runs confirmed no function
   timeout.
 
-## Bugs found and fixed (2026-07-27, same evening as the visual pass)
+## Bugs found and fixed
 
 - **Sources silently went missing.** The trailing `STATS: ...` line
   instruction added during the visual pass — originally framed as "the
@@ -228,6 +228,27 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   counter badge and accent border on every ordered-list card. Fixed by
   prefixing the card/fragility selectors with `.teardown` so they win on
   specificity regardless of source order.
+
+- **STATS line crammed multiple conflicting values into one field.**
+  (2026-07-28) The STATS instruction told the model to fill a field only
+  when confident, but didn't say what to do when its own research (per
+  the contradiction-flagging rule used in prose) turned up disagreeing
+  numbers for the same field — it sometimes wrote all of them into one
+  cell (e.g. `Headcount=817 (Tracxn) or 4.7K (GetLatka) or 4156
+  (One21)`), breaking the compact stat-tile layout, which expects one
+  clean value per field. Fixed by extending the STATS instruction to
+  apply the same credibility ranking already used in the main prose
+  (disclosed/filed figures and funding announcements outrank aggregator
+  estimates like Tracxn/GetLatka/Owler/Growjo/Prospeo; more recent
+  outranks older) and require exactly one winning value per field, never
+  a concatenation or inline source citation — the full disagreement
+  still gets discussed in the relevant prose section (e.g. Traction
+  Signals) as before. Verified via 3 direct API calls each against
+  `rapido.bike` and `zomato.com`: all 6 runs rendered every one of the 6
+  fields as a single clean value or a dash, never multiple values joined
+  together. Figures still varied *between* separate runs (expected
+  search-grounding non-determinism, see Known issues) but never *within*
+  a single run's STATS line.
 
 ## Deferred
 
