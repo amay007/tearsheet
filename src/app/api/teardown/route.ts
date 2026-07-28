@@ -14,6 +14,12 @@ type StreamEvent =
   | { type: "done"; sources: { uri: string; title: string }[] }
   | { type: "error"; message: string };
 
+// Observed occasionally: the model leaks a raw tool-call payload (the googleSearch
+// results themselves) into the text stream, immediately followed by the entire
+// teardown regenerating a second time. Once this pattern shows up, everything from
+// that point on is garbage — truncate there and treat the stream as complete.
+const LEAKED_TOOL_OUTPUT_PATTERN = /"google_search_results"\s*:\s*\[/;
+
 export type Mode = "general" | "investing" | "interviewing" | "selling" | "competing";
 
 const MODES: Mode[] = ["general", "investing", "interviewing", "selling", "competing"];
@@ -172,6 +178,8 @@ export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
   const sourcesByUri = new Map<string, { uri: string; title: string }>();
   let sawText = false;
+  let accumulatedText = "";
+  let leakTruncated = false;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -181,8 +189,21 @@ export async function POST(req: NextRequest) {
         for await (const chunk of geminiStream) {
           const text = extractResponseText(chunk);
           if (text) {
-            sawText = true;
-            send({ type: "chunk", text });
+            const priorLength = accumulatedText.length;
+            accumulatedText += text;
+            const leakMatch = accumulatedText.match(LEAKED_TOOL_OUTPUT_PATTERN);
+
+            if (leakMatch && leakMatch.index !== undefined) {
+              const safeText = text.slice(0, Math.max(0, leakMatch.index - priorLength));
+              if (safeText) {
+                sawText = true;
+                send({ type: "chunk", text: safeText });
+              }
+              leakTruncated = true;
+            } else {
+              sawText = true;
+              send({ type: "chunk", text });
+            }
           }
 
           const groundingChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
@@ -192,15 +213,23 @@ export async function POST(req: NextRequest) {
               sourcesByUri.set(web.uri, { uri: web.uri, title: web.title || web.uri });
             }
           }
+
+          if (leakTruncated) break;
         }
 
         const duration = Math.round((Date.now() - startTime) / 1000);
+        if (leakTruncated) {
+          console.error("Gemini generateContentStream leaked a raw tool-call payload; truncated.");
+          console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode} category=leaked_tool_output_truncated`);
+        }
         if (!sawText) {
           console.error("Gemini generateContentStream produced no text.");
           console.log(`TEARDOWN_FAIL domain=${domain} duration=${duration}s mode=${mode} category=empty_response`);
           send({ type: "error", message: GENERIC_ERROR });
         } else {
-          console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode}`);
+          if (!leakTruncated) {
+            console.log(`TEARDOWN_OK domain=${domain} duration=${duration}s mode=${mode}`);
+          }
           send({ type: "done", sources: Array.from(sourcesByUri.values()) });
         }
       } catch (err) {

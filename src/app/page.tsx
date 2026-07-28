@@ -48,10 +48,48 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+function normalizeForCompare(s: string): string {
+  return s.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function charBigrams(s: string): Set<string> {
+  const grams = new Set<string>();
+  for (let i = 0; i < s.length - 1; i++) grams.add(s.slice(i, i + 2));
+  return grams;
+}
+
+function verdictsAreSimilar(a: string, b: string): boolean {
+  const na = normalizeForCompare(a);
+  const nb = normalizeForCompare(b);
+  if (!na || !nb) return false;
+  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+
+  // Dice coefficient over character bigrams — tolerates paraphrasing/stemming
+  // differences (e.g. "dominates" vs "dominate") better than word-level overlap.
+  const ba = charBigrams(na);
+  const bb = charBigrams(nb);
+  if (ba.size === 0 || bb.size === 0) return false;
+  let overlap = 0;
+  for (const g of ba) if (bb.has(g)) overlap++;
+  const dice = (2 * overlap) / (ba.size + bb.size);
+  return dice >= 0.5;
+}
+
 function splitVerdict(text: string): { verdict: string | null; body: string } {
   const match = text.match(/^Verdict:\s*(.+?)\s*\n+([\s\S]*)$/);
   if (!match) return { verdict: null, body: text };
-  return { verdict: match[1].trim(), body: match[2] };
+  const verdict = match[1].trim();
+  let body = match[2];
+
+  // The model occasionally repeats its own opening verdict sentence a second time,
+  // immediately (blank line between), before continuing into Section 1 — skip past
+  // that duplicate too so it doesn't render as a stray unstyled paragraph.
+  const dupMatch = body.match(/^Verdict:\s*(.+?)\s*\n+([\s\S]*)$/);
+  if (dupMatch && verdictsAreSimilar(verdict, dupMatch[1].trim())) {
+    body = dupMatch[2];
+  }
+
+  return { verdict, body };
 }
 
 type Stats = Partial<Record<"founded" | "funding" | "headcount" | "hq" | "revenue" | "growth", string>>;
