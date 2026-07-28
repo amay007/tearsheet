@@ -21,7 +21,9 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
     Prefills the input/mode but never auto-submits.
   - Teardown text is split into `verdict` / `body` (via `extractStats`
     then `splitVerdict`), then `body` is split into sections on `## `
-    headings (`parseSections`). Each section renders through its own
+    headings (`parseSections`). `splitVerdict()` also detects and skips
+    a duplicated opening verdict sentence, if the model repeats it —
+    see Bugs found and fixed. Each section renders through its own
     `<ReactMarkdown>` instance with a `components` override chosen by
     section title: card-list rendering (`cardComponents`) for the 3
     Questions section and any mode's 6th section, left-border accent
@@ -117,8 +119,10 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
     only failures *after* streaming has begun (mid-stream Gemini errors)
     can no longer change the HTTP status code, since headers are already
     committed to 200; those are signaled via the `error` NDJSON event
-    instead. See Shipped and verified / Bugs found and fixed for the
-    Vercel-specific verification story.
+    instead. Also watches accumulated text for a leaked raw tool-call
+    payload (`LEAKED_TOOL_OUTPUT_PATTERN`) and truncates the stream
+    there if found — see Bugs found and fixed. See Shipped and verified
+    for the Vercel-specific verification story.
   - **Use-case modes** — `mode` param (`general` default, `investing`,
     `interviewing`, `selling`, `competing`). Non-general modes append one
     `MODE_SECTION_PROMPTS[mode]` block to the base system prompt, adding
@@ -415,6 +419,90 @@ Search grounding. Live at https://tearsheet-iota.vercel.app.
   live on the Vercel preview with a mode selected after deploying the
   fix — user confirmed clean: no visible STATS line, stat strip
   rendered correctly.
+
+- **Whole teardown generated twice, concatenated into one response.**
+  (2026-07-28, reported live as "Sleepy Owl + Investing mode generated
+  the entire output twice") First reproduced on the very first attempt
+  with a single direct server request (no browser, no frontend
+  involved) — this immediately ruled out a client-side double-fetch or
+  double-subscribe bug. Byte-offset inspection of the raw NDJSON stream
+  showed the actual mechanism: two **independent** model artifacts,
+  discovered and fixed separately.
+  1. **Leaked tool-call payload → full regeneration.** Right after the
+     first STATS line, with no separating newline, the model
+     occasionally dumps a raw `"google_search_results": [...]` JSON
+     array — apparently an internal tool-call payload that isn't
+     properly withheld from the visible output — and then, having
+     "seen" that dump in its own context, regenerates the entire
+     teardown (Verdict, all 6 sections, STATS) a second time,
+     concatenated directly onto the first copy's tail. Fixed in
+     `src/app/api/teardown/route.ts`: the streaming loop tracks
+     accumulated text and matches it against
+     `/"google_search_results"\s*:\s*\[/` on every chunk. On a match,
+     it sends only the safe prefix of that chunk (everything before the
+     leak), stops consuming the generator (`break`, which triggers the
+     async generator's own cleanup per spec), and finalizes the stream
+     normally — `done` event, sources gathered so far, logged as
+     `TEARDOWN_OK domain=... category=leaked_tool_output_truncated` so
+     real-world frequency is visible in production logs going forward.
+     Known minor limitation (never observed live, found via a
+     synthetic stress test): if the leak pattern happens to split
+     exactly across a chunk boundary, a few stray characters of the
+     JSON key prefix can reach the client before detection completes —
+     the full duplicate content is still excluded either way.
+  2. **Duplicated verdict sentence.** Separately, and independently of
+     the JSON leak, the model sometimes repeats its own opening
+     "Verdict: ..." sentence a second time immediately (a blank line
+     between the two, then normal Section 1 content continues) —
+     first noticed on `zetwerk.com`/Interviewing mode, with no leaked
+     JSON and no duplicate sections, just the one sentence twice.
+     `splitVerdict()` in `src/app/page.tsx` only ever stripped the
+     first "Verdict:" occurrence, so the second copy rendered as a
+     stray unstyled paragraph at the top of the body. Fixed by checking
+     whether the text immediately following the first verdict is
+     itself another verdict-shaped line, and — if the two sentences are
+     the same or similar (exact match, one a substring of the other, or
+     a character-bigram Dice coefficient ≥ 0.5, chosen over word-level
+     Jaccard because it tolerates stemming/paraphrase differences like
+     "dominates" vs "dominate" better) — skips past the duplicate before
+     rendering. Deliberately handles exactly one duplicate (matching
+     every real occurrence observed); 3+ consecutive repeats, never
+     seen in practice, would only have the first stripped.
+
+  **Verified via a 31-run tally across three phases** (all against
+  localhost, cross-checked against `/private/tmp/tearsheet-dev.log`
+  for server-side confirmation):
+  - *Phase 1 — initial reproduction, pre-fix* (3 runs, all
+    `sleepyowl.co.in`/Investing): 1 leak, 2 clean. Confirmed the bug is
+    real but non-deterministic (~1/3 on the exact combo that triggered
+    the report).
+  - *Phase 2 — diverse normal-usage batch, post-leak-fix but
+    pre-verdict-fix* (8 runs, 8 distinct domain/mode combinations): 7
+    clean, 1 anomaly — `zetwerk.com`/Interviewing showed the verdict
+    duplication (unfixed at that point in the night, which is what
+    prompted fix #2 above).
+  - *Phase 3 — post-both-fixes batch* (20 runs, ~15 distinct companies
+    across all 5 modes, no repeated domain+mode pairs from earlier
+    phases): 19 clean, 1 `verdict-duplication-caught`
+    (`wave.com`/general — a **novel** occurrence, not a re-run of the
+    zetwerk.com case, confirming the fix generalizes rather than being
+    overfit to one company's exact wording). Zero leak recurrences.
+  - **Grand total: 31 real teardown generations, 1 leak (~3%, pre-fix),
+    2 verdict duplications (one pre-fix/unstripped, one post-fix/
+    stripped cleanly).**
+
+  **Confidence, stated honestly per-fix:**
+  - *Verdict-duplication fix*: confirmed on live, novel data
+    (`wave.com`, never tested before that run) — high confidence.
+  - *Leak filter*: the leak never recurred in the 28 runs after the fix
+    shipped (consistent with its low ~3% observed frequency — not
+    enough volume to expect a repeat), so it has not been proven
+    against a live recurrence. Confidence rests on a unit test built
+    from the actual captured leak bytes (verified it truncates exactly
+    at the end of the real STATS line, excludes the leak and the full
+    duplicate) plus the simplicity of the code path, not on a confirmed
+    live catch. Watch `category=leaked_tool_output_truncated` in
+    production logs to close this gap over time.
 
 ## Deferred
 
